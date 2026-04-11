@@ -4,11 +4,19 @@
 (function () {
   'use strict';
 
-  // ─── Canvas Setup ───────────────────────────────────────────────
+  // ─── Canvas Setup (high-DPI aware) ──────────────────────────────
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
   const W = 390;
   const H = 844;
+  const DPR = window.devicePixelRatio || 1;
+
+  // Scale canvas buffer to device pixels for sharp rendering
+  canvas.width = W * DPR;
+  canvas.height = H * DPR;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.scale(DPR, DPR);
 
   // ─── World Config (will be per-world later) ─────────────────────
   const CONFIG = {
