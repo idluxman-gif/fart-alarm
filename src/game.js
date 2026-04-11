@@ -17,7 +17,7 @@
       return 60000 / this.bpm;
     },
     bubbleTravelTime: 1800,     // ms for bubble to fall from spawn to tap zone
-    tapZoneY: H * 0.55,        // where the tap zone ring sits (above Gino's head)
+    tapZoneY: H * 0.65,        // where the tap zone ring sits (chest height on Gino)
     bubbleSpawnY: -60,          // spawn above visible canvas
     bubbleSize: 70,             // rendered bubble diameter
     tapZoneSize: 90,            // rendered ring diameter
@@ -117,12 +117,14 @@
 
   function getFartMeterLayout() {
     const emptyImg = images.fartMeterEmpty;
-    const targetH = H * 0.35;
+    // 50% larger than before: was 35% height, now 52%
+    const targetH = H * 0.52;
     const scale = targetH / emptyImg.height;
-    const drawW = emptyImg.width * scale;
+    // 50% wider: multiply width by 1.5
+    const drawW = emptyImg.width * scale * 1.5;
     const drawH = targetH;
-    const drawX = W - drawW - 24;
-    const drawY = H * 0.12;
+    const drawX = W - drawW - 12;
+    const drawY = H * 0.06;
     return { drawW, drawH, drawX, drawY, scale };
   }
 
@@ -262,12 +264,37 @@
     }
   }
 
+  // ─── Cover-style background drawing ─────────────────────────────
+  // Fills the canvas edge-to-edge, cropping the image to fit (like CSS cover)
+  function drawCover(img) {
+    const imgRatio = img.width / img.height;
+    const canvasRatio = W / H;
+
+    let sx, sy, sw, sh;
+
+    if (canvasRatio > imgRatio) {
+      // Canvas is wider than image — crop top/bottom
+      sw = img.width;
+      sh = img.width / canvasRatio;
+      sx = 0;
+      sy = (img.height - sh) / 2;
+    } else {
+      // Canvas is taller than image — crop left/right
+      sh = img.height;
+      sw = img.height * canvasRatio;
+      sx = (img.width - sw) / 2;
+      sy = 0;
+    }
+
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, W, H);
+  }
+
   // ─── Render ─────────────────────────────────────────────────────
   function render(now) {
     ctx.clearRect(0, 0, W, H);
 
-    // 1. Elevator background
-    ctx.drawImage(images.elevatorBase, 0, 0, W, H);
+    // 1. Elevator background (cover — crop to fill, no letterboxing)
+    drawCover(images.elevatorBase);
 
     // 2. Gino (behind gameplay elements)
     const gino = getGinoLayout();

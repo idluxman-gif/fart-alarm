@@ -10,7 +10,7 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #1a1a2e;
+  background: #000;
 }
 
 body {
@@ -21,11 +21,10 @@ body {
 
 #game {
   display: block;
-  background: #000;
-  /* On mobile, fill the screen height; on desktop, stay at native 390x844 */
-  max-height: 100vh;
-  max-width: 100vw;
-  /* Maintain crisp pixels */
+  /* Fill the entire viewport — no letterboxing */
+  width: 100vw;
+  height: 100vh;
+  /* Crisp pixels */
   image-rendering: -webkit-optimize-contrast;
   image-rendering: crisp-edges;
 }
