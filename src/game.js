@@ -82,10 +82,12 @@
     bpm: 85,
     get beatInterval() { return 60000 / this.bpm; },
     bubbleTravelTime: 1800,
+    beatOffsetMs: 20,            // delay bubbles by ~20ms to sync with music
     tapZoneY: H * 0.65,
     bubbleSpawnY: -60,
     bubbleSize: 70,
     tapZoneSize: 90,
+    countdownBeats: 3,           // 3-2-1 countdown before gameplay starts
 
     // Timing windows
     perfectWindow: 30,
@@ -188,6 +190,11 @@
     // Passengers in elevator
     passengers: [],
 
+    // Countdown (3-2-1 before gameplay)
+    countdownPhase: true,        // true during countdown
+    countdownStartTime: 0,
+    countdownNumber: 3,          // current number showing
+
     // Game over
     gameOver: false,
   };
@@ -263,9 +270,10 @@
 
   // ─── Bubble Management ──────────────────────────────────────────
   function spawnBubble(beatTime) {
+    const adjusted = beatTime + CONFIG.beatOffsetMs;
     state.bubbles.push({
-      spawnTime: beatTime - CONFIG.bubbleTravelTime,
-      hitTime: beatTime,
+      spawnTime: adjusted - CONFIG.bubbleTravelTime,
+      hitTime: adjusted,
       hit: false,
       missed: false,
     });
@@ -452,6 +460,9 @@
       return; // skip rhythm updates during door transition
     }
 
+    // Skip rhythm during countdown
+    if (state.countdownPhase) return;
+
     // Spawn bubbles on beat
     while (state.nextBeatTime <= now + CONFIG.bubbleTravelTime) {
       spawnBubble(state.nextBeatTime);
@@ -554,7 +565,10 @@
     // 11. Game over
     if (state.gameOver) drawGameOver();
 
-    // 12. Tap to start overlay (before music starts)
+    // 12. Countdown overlay (3-2-1)
+    if (state.countdownPhase && !needsUserGesture && !state.gameOver) drawCountdown(now);
+
+    // 13. Tap to start overlay (before music starts)
     if (needsUserGesture && !state.gameOver) drawTapToStart();
   }
 
@@ -754,6 +768,47 @@
     ctx.restore();
   }
 
+  function drawCountdown(now) {
+    const elapsed = now - state.countdownStartTime;
+    const beatMs = CONFIG.beatInterval;
+    const totalBeats = CONFIG.countdownBeats;
+
+    // Which beat are we on? (0-indexed)
+    const beatIndex = Math.floor(elapsed / beatMs);
+    const beatProgress = (elapsed % beatMs) / beatMs;
+
+    if (beatIndex >= totalBeats) {
+      // Countdown done — start gameplay
+      state.countdownPhase = false;
+      state.rhythmPaused = false;
+      state.nextBeatTime = now + CONFIG.beatInterval;
+      return;
+    }
+
+    const number = totalBeats - beatIndex; // 3, 2, 1
+
+    ctx.save();
+    // Slight darken
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.fillRect(0, 0, W, H);
+
+    // Number scales up and fades on each beat
+    const scale = 1 + beatProgress * 0.5;
+    const alpha = 1 - beatProgress * 0.8;
+
+    ctx.globalAlpha = Math.max(0, alpha);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.floor(72 * scale)}px Arial, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(number, W / 2, H * 0.42);
+
+    ctx.globalAlpha = 0.6;
+    ctx.font = '18px Arial, sans-serif';
+    ctx.fillText('Get ready...', W / 2, H * 0.52);
+    ctx.restore();
+  }
+
   function drawGameOver() {
     ctx.save();
     ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
@@ -827,9 +882,11 @@
     state.gameOver = false;
     state.currentFloor = 1;
     state.floorPhase = 'riding';
-    state.rhythmPaused = false;
+    state.rhythmPaused = true;
     state.beatCount = 0;
     state.passengers = [];
+    state.countdownPhase = true;
+    state.countdownStartTime = performance.now();
     state.lastTime = performance.now();
     state.nextBeatTime = state.lastTime + CONFIG.beatInterval;
   }
@@ -856,8 +913,8 @@
         // Patch onTap to count beats on hit
         canvas.addEventListener('mousedown', (e) => {
           e.preventDefault();
-          if (needsUserGesture) startMusic();
-          if (state.gameOver) { restartGame(); startMusic(); return; }
+          if (needsUserGesture) { startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; }
+          if (state.gameOver) { restartGame(); startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
           if (state.rhythmPaused) return;
 
           const now = performance.now();
@@ -887,8 +944,8 @@
 
         canvas.addEventListener('touchstart', (e) => {
           e.preventDefault();
-          if (needsUserGesture) startMusic();
-          if (state.gameOver) { restartGame(); startMusic(); return; }
+          if (needsUserGesture) { startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; }
+          if (state.gameOver) { restartGame(); startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
           if (state.rhythmPaused) return;
 
           const now = performance.now();
