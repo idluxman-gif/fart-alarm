@@ -41,7 +41,7 @@
 
   // ─── Asset Manifest ─────────────────────────────────────────────
   const ASSETS = {
-    elevatorBase: 'Assets/Backgrounds/elevator-interior-base.png',
+    elevatorBase: 'Assets/Backgrounds/elevator-interior-base2.jpg',
     ginoIdle: 'Assets/characters/gino-idle.png',
     fartMeterEmpty: 'Assets/ui/fart-meter-empty.png',
     fartMeterFillGreen: 'Assets/ui/fart-meter-fill-green.png',
@@ -264,37 +264,12 @@
     }
   }
 
-  // ─── Cover-style background drawing ─────────────────────────────
-  // Fills the canvas edge-to-edge, cropping the image to fit (like CSS cover)
-  function drawCover(img) {
-    const imgRatio = img.width / img.height;
-    const canvasRatio = W / H;
-
-    let sx, sy, sw, sh;
-
-    if (canvasRatio > imgRatio) {
-      // Canvas is wider than image — crop top/bottom
-      sw = img.width;
-      sh = img.width / canvasRatio;
-      sx = 0;
-      sy = (img.height - sh) / 2;
-    } else {
-      // Canvas is taller than image — crop left/right
-      sh = img.height;
-      sw = img.height * canvasRatio;
-      sx = (img.width - sw) / 2;
-      sy = 0;
-    }
-
-    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, W, H);
-  }
-
   // ─── Render ─────────────────────────────────────────────────────
   function render(now) {
     ctx.clearRect(0, 0, W, H);
 
-    // 1. Elevator background (cover — crop to fill, no letterboxing)
-    drawCover(images.elevatorBase);
+    // 1. Elevator background (tall portrait image, stretch to fill canvas)
+    ctx.drawImage(images.elevatorBase, 0, 0, W, H);
 
     // 2. Gino (behind gameplay elements)
     const gino = getGinoLayout();
