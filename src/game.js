@@ -49,7 +49,7 @@
 
   // ─── Asset Manifest ─────────────────────────────────────────────
   const ASSETS = {
-    elevatorBase: 'Assets/Backgrounds/elevator-interior-base2.jpg',
+    elevatorBase: 'Assets/Backgrounds/elevator-interior-base3.jpg',
     ginoIdle: 'Assets/characters/gino-idle.png',
     fartMeterEmpty: 'Assets/ui/fart-meter-empty.png',
     fartMeterFillGreen: 'Assets/ui/fart-meter-fill-green.png',
