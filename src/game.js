@@ -17,6 +17,66 @@
   canvas.style.height = H + 'px';
   ctx.scale(DPR, DPR);
 
+  // ─── Audio System (Web Audio API for BPM-synced playback) ───────
+  let audioCtx = null;
+  let musicBuffer = null;
+  let musicSource = null;
+  let musicStartTime = 0;     // audioCtx.currentTime when music started
+  let musicPlaying = false;
+  let musicLoaded = false;
+  let needsUserGesture = true; // mobile requires tap to start audio
+
+  function loadMusic() {
+    return fetch('Assets/audio/smooth-jazz-loop.mp3')
+      .then(res => res.arrayBuffer())
+      .then(buf => {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        return audioCtx.decodeAudioData(buf);
+      })
+      .then(decoded => {
+        musicBuffer = decoded;
+        musicLoaded = true;
+        console.log(`Music loaded: ${decoded.duration.toFixed(1)}s`);
+      })
+      .catch(err => console.warn('Music load failed:', err));
+  }
+
+  function startMusic() {
+    if (!musicLoaded || !audioCtx) return;
+    // Resume context if suspended (mobile)
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+
+    stopMusic();
+    musicSource = audioCtx.createBufferSource();
+    musicSource.buffer = musicBuffer;
+    musicSource.loop = true;
+    musicSource.connect(audioCtx.destination);
+    musicSource.start(0);
+    musicStartTime = audioCtx.currentTime;
+    musicPlaying = true;
+    needsUserGesture = false;
+  }
+
+  function stopMusic() {
+    if (musicSource) {
+      try { musicSource.stop(); } catch (e) {}
+      musicSource = null;
+    }
+    musicPlaying = false;
+  }
+
+  function pauseMusic() {
+    if (audioCtx && musicPlaying) {
+      audioCtx.suspend();
+    }
+  }
+
+  function resumeMusic() {
+    if (audioCtx && audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+  }
+
   // ─── World Config ───────────────────────────────────────────────
   const CONFIG = {
     bpm: 85,
@@ -271,7 +331,7 @@
     }
 
     if (state.combo > state.bestCombo) state.bestCombo = state.combo;
-    if (state.meter >= 1.0) { state.meter = 1.0; state.gameOver = true; }
+    if (state.meter >= 1.0) { state.meter = 1.0; state.gameOver = true; stopMusic(); }
   }
 
   function showPopup(type, time) {
@@ -379,6 +439,7 @@
         if (state.currentFloor > CONFIG.totalFloors) {
           // Level complete!
           state.gameOver = true;
+          stopMusic();
           return;
         }
 
@@ -386,6 +447,7 @@
         state.rhythmPaused = false;
         state.beatCount = 0;
         state.nextBeatTime = now + CONFIG.beatInterval;
+        resumeMusic();
       }
       return; // skip rhythm updates during door transition
     }
@@ -427,7 +489,7 @@
     }
 
     // Check game over
-    if (state.meter >= 1.0) { state.meter = 1.0; state.gameOver = true; }
+    if (state.meter >= 1.0) { state.meter = 1.0; state.gameOver = true; stopMusic(); }
 
     // Clear expired popup
     if (state.activePopup && now - state.activePopup.startTime > CONFIG.comboPopupDuration) {
@@ -439,8 +501,8 @@
       state.floorPhase = 'doors';
       state.floorTransitionStart = now;
       state.rhythmPaused = true;
-      // Clear remaining bubbles
       state.bubbles = [];
+      pauseMusic();
     }
   }
 
@@ -491,6 +553,9 @@
 
     // 11. Game over
     if (state.gameOver) drawGameOver();
+
+    // 12. Tap to start overlay (before music starts)
+    if (needsUserGesture && !state.gameOver) drawTapToStart();
   }
 
   function drawPassengers() {
@@ -670,6 +735,25 @@
     ctx.restore();
   }
 
+  function drawTapToStart() {
+    ctx.save();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.fillRect(0, 0, W, H);
+
+    const pulse = 0.7 + Math.sin(performance.now() / 400) * 0.3;
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 28px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('🎵 TAP TO START 🎵', W / 2, H * 0.45);
+
+    ctx.globalAlpha = 0.6;
+    ctx.font = '16px Arial, sans-serif';
+    ctx.fillText('Tap the bubbles to the beat!', W / 2, H * 0.52);
+    ctx.restore();
+  }
+
   function drawGameOver() {
     ctx.save();
     ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
@@ -765,14 +849,15 @@
   function init() {
     showLoading();
 
-    loadAllAssets()
+    Promise.all([loadAllAssets(), loadMusic()])
       .then(() => {
-        console.log('FART ALARM — Phase 3 ready');
+        console.log('FART ALARM — Phase 3 ready (music loaded)');
 
         // Patch onTap to count beats on hit
         canvas.addEventListener('mousedown', (e) => {
           e.preventDefault();
-          if (state.gameOver) { restartGame(); return; }
+          if (needsUserGesture) startMusic();
+          if (state.gameOver) { restartGame(); startMusic(); return; }
           if (state.rhythmPaused) return;
 
           const now = performance.now();
@@ -802,7 +887,8 @@
 
         canvas.addEventListener('touchstart', (e) => {
           e.preventDefault();
-          if (state.gameOver) { restartGame(); return; }
+          if (needsUserGesture) startMusic();
+          if (state.gameOver) { restartGame(); startMusic(); return; }
           if (state.rhythmPaused) return;
 
           const now = performance.now();
