@@ -41,15 +41,15 @@
 
   // ─── Asset Manifest ─────────────────────────────────────────────
   const ASSETS = {
-    elevatorBase: 'assets/backgrounds/elevator-interior-base.png',
-    ginoIdle: 'assets/characters/gino-idle.png',
-    fartMeterEmpty: 'assets/ui/fart-meter-empty.png',
-    fartMeterFillGreen: 'assets/ui/fart-meter-fill-green.png',
-    tapGhostBubble: 'assets/ui/tap-ghost-bubble.png',
-    tapZoneRing: 'assets/ui/tap-zone-ring.png',
-    comboPopupPerfect: 'assets/ui/combo-popup-perfect.png',
-    comboPopupGood: 'assets/ui/combo-popup-good.png',
-    comboPopupMiss: 'assets/ui/combo-popup-miss.png',
+    elevatorBase: 'Assets/Backgrounds/elevator-interior-base.png',
+    ginoIdle: 'Assets/characters/gino-idle.png',
+    fartMeterEmpty: 'Assets/ui/fart-meter-empty.png',
+    fartMeterFillGreen: 'Assets/ui/fart-meter-fill-green.png',
+    tapGhostBubble: 'Assets/ui/tap-ghost-bubble.png',
+    tapZoneRing: 'Assets/ui/tap-zone-ring.png',
+    comboPopupPerfect: 'Assets/ui/combo-popup-perfect.png',
+    comboPopupGood: 'Assets/ui/combo-popup-good.png',
+    comboPopupMiss: 'Assets/ui/combo-popup-miss.png',
   };
 
   const images = {};
