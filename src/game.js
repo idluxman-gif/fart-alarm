@@ -92,7 +92,7 @@
     bpm: 85,
     get beatInterval() { return 60000 / this.bpm; },
     bubbleTravelTime: 1800,
-    beatOffsetMs: 200,           // FIX #1: shift bubbles 200ms later to land on beat
+    beatOffsetMs: 300,           // shift bubbles 300ms later to land on beat
     tapZoneY: H * 0.65,
     bubbleSpawnY: -60,
     bubbleSize: 70,
@@ -329,7 +329,7 @@
 
   // FIX #5: Passengers only board during door sequence, never teleport
   function schedulePassengerBoarding() {
-    if (state.currentFloor < 1) return; // Floor 0 = no passengers
+    const nextFloor = state.currentFloor + 1; // floor we're transitioning TO
     const precision = getFloorPrecision();
 
     // Exits
@@ -343,15 +343,14 @@
       pax.slideStartTime = performance.now();
     }
 
-    // FIX #3: Board on floors ≥ 1 (every floor for testing)
-    const shouldBoard = state.currentFloor >= 1;
+    // Board a passenger when transitioning to floor 1+
+    const shouldBoard = nextFloor >= 1;
     const extraBoards = precision < 50 ? 1 : 0;
 
     if ((shouldBoard || extraBoards > 0) && state.passengers.filter(p => !p.exiting).length < 3) {
       const activeCount = state.passengers.filter(p => !p.exiting).length;
       const side = activeCount % 2 === 0 ? 'left' : 'right';
       const newPax = createPassenger('businessman', side);
-      // FIX #5: Don't set boarding yet — that happens in 'pax-slide' phase
       state.pendingPassenger = newPax;
     }
   }
@@ -498,18 +497,12 @@
     // 1. Background
     ctx.drawImage(images.elevatorBase, 0, 0, W, H);
 
-    // 2. Door overlay during transitions
-    const doorPhase = getDoorOpenAmount(now);
-
-    // 3. Passengers
+    // 2. Passengers
     drawPassengers();
 
-    // 4. Gino
+    // 3. Gino
     const gino = getGinoLayout();
     ctx.drawImage(images.ginoIdle, gino.drawX, gino.drawY, gino.drawW, gino.drawH);
-
-    // 5. Door closing overlay
-    if (doorPhase !== null) drawDoors(doorPhase);
 
     // 6. Tap zone + bubbles (only during riding)
     if (state.floorPhase === 'riding' && !state.countdownPhase) {
@@ -547,40 +540,6 @@
     if (state.gameOver) drawGameOver();
   }
 
-  // FIX #4: Door animation
-  function getDoorOpenAmount(now) {
-    if (state.floorPhase === 'doors-open') {
-      return Math.min(1, (now - state.floorTransitionStart) / CONFIG.floorDoorsOpenDuration);
-    }
-    if (state.floorPhase === 'pax-slide') return 1; // fully open
-    if (state.floorPhase === 'doors-close') {
-      return 1 - Math.min(1, (now - state.floorTransitionStart) / CONFIG.floorDoorsCloseDuration);
-    }
-    return null;
-  }
-
-  function drawDoors(openAmount) {
-    // Draw two door panels sliding apart
-    const doorW = W * 0.4;
-    const doorH = H * 0.55;
-    const doorY = H * 0.18;
-    const maxSlide = doorW * 0.9;
-    const slide = maxSlide * openAmount;
-
-    ctx.save();
-    ctx.fillStyle = '#8a8a7a';
-    // Left door
-    ctx.fillRect(W / 2 - doorW - slide * 0.1, doorY, doorW - slide, doorH);
-    // Right door
-    ctx.fillRect(W / 2 + slide * 0.1, doorY, doorW - slide, doorH);
-
-    // Door frame
-    ctx.strokeStyle = '#666';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(W / 2 - doorW - 2, doorY - 2, doorW * 2 + 4, doorH + 4);
-    ctx.restore();
-  }
-
   function drawPassengers() {
     for (const pax of state.passengers) {
       const img = getPassengerImage(pax);
@@ -613,20 +572,20 @@
     }
   }
 
-  // FIX #2: Draw meter fill only within tube boundaries, in 10 discrete segments
+  // Draw meter fill only within the glass tube, in 10 discrete segments
+  // Tube boundaries from pixel analysis: top=19.3%, bottom=68.5% of image height
   function drawMeterFill(meter, fillPercent) {
-    // Snap to segments for display
     const segments = Math.round(fillPercent * 10);
     if (segments <= 0) return;
     const segFill = segments / 10;
 
     const fillImg = images.fartMeterFillGreen;
-    // The tube area is roughly the inner 80% of the meter image, offset from top/bottom
-    const tubeTopOffset = meter.drawH * 0.06;  // top cap of tube
-    const tubeBotOffset = meter.drawH * 0.12;  // bottom base of tube
-    const tubeH = meter.drawH - tubeTopOffset - tubeBotOffset;
+    // Exact tube region within the rendered meter
+    const tubeTop = meter.drawY + meter.drawH * 0.193;   // where glass tube starts
+    const tubeBot = meter.drawY + meter.drawH * 0.685;   // where glass tube ends
+    const tubeH = tubeBot - tubeTop;
     const fillH = tubeH * segFill;
-    const clipY = meter.drawY + tubeTopOffset + tubeH - fillH;
+    const clipY = tubeBot - fillH;  // fill from bottom of tube upward
 
     ctx.save();
     ctx.beginPath();
@@ -674,21 +633,25 @@
   }
 
   function drawFloorHUD() {
-    ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    roundRect(ctx, 12, 16, 80, 44, 8); ctx.fill();
-    ctx.fillStyle = '#4ade80'; ctx.font = 'bold 20px "Courier New", monospace';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(`F${state.currentFloor}`, 52, 38); ctx.restore();
+    // Render floor number on the elevator's built-in LED display
+    // Cover the static "4" in the background, then draw dynamic floor number
+    const ledX = W * 0.32;
+    const ledY = H * 0.210;
+    const ledW = W * 0.36;
+    const ledH = H * 0.072;
 
-    const paxCount = state.passengers.filter(p => !p.exiting).length;
-    if (paxCount > 0) {
-      ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.5)';
-      roundRect(ctx, 12, 66, 80, 28, 6); ctx.fill();
-      ctx.fillStyle = '#fbbf24'; ctx.font = '14px Arial';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(`\u{1F464} ${paxCount}`, 52, 80); ctx.restore();
-    }
+    ctx.save();
+    // Dark panel to cover background's static number
+    ctx.fillStyle = '#1a1a18';
+    ctx.fillRect(ledX, ledY, ledW, ledH);
+
+    // Dynamic floor number in amber LED style
+    ctx.fillStyle = '#e8a020';
+    ctx.font = 'bold 34px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${state.currentFloor}`, ledX + ledW / 2, ledY + ledH / 2);
+    ctx.restore();
   }
 
   // FIX #4: Floor transition text with precision
