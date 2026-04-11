@@ -43,18 +43,25 @@
 
   function startMusic() {
     if (!musicLoaded || !audioCtx) return;
-    // Resume context if suspended (mobile)
-    if (audioCtx.state === 'suspended') audioCtx.resume();
 
-    stopMusic();
-    musicSource = audioCtx.createBufferSource();
-    musicSource.buffer = musicBuffer;
-    musicSource.loop = true;
-    musicSource.connect(audioCtx.destination);
-    musicSource.start(0);
-    musicStartTime = audioCtx.currentTime;
-    musicPlaying = true;
-    needsUserGesture = false;
+    // Resume context first (required on mobile), then start playback
+    const doStart = () => {
+      stopMusic();
+      musicSource = audioCtx.createBufferSource();
+      musicSource.buffer = musicBuffer;
+      musicSource.loop = true;
+      musicSource.connect(audioCtx.destination);
+      musicSource.start(0);
+      musicStartTime = audioCtx.currentTime;
+      musicPlaying = true;
+      needsUserGesture = false;
+    };
+
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().then(doStart);
+    } else {
+      doStart();
+    }
   }
 
   function stopMusic() {
@@ -94,12 +101,12 @@
     goodWindow: 80,
 
     // Meter effects per tap result
-    meterPerfect: -0.02,
-    meterGood: 0.03,
-    meterMiss: 0.08,
+    meterPerfect: -0.02,       // PERFECT reduces meter
+    meterGood: 0,              // GOOD is neutral — no meter change
+    meterMiss: 0.08,           // only MISS fills the meter
 
-    // Passive meter
-    meterBaseRate: 0.02,         // base fill with no passengers
+    // Passive meter (only fills when passengers are present)
+    meterBaseRate: 0,            // no passive fill without passengers
     meterPerPassenger: 0.008,    // +0.8% per second per passenger
     meterComboDecay: -0.015,
 
