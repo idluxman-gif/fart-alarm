@@ -1,5 +1,5 @@
-// FART ALARM — game.js (Phase 3: Passenger System & Floor Events)
-// Canvas 390x844 | Rhythm engine | Passenger NPC with state transitions | Floor progression
+// FART ALARM — game.js (Phase 3b: Full Floor Sequence + Fart SFX)
+// Canvas 390x844 | BPM rhythm | Passengers | Floor transitions with doors | Fart sounds
 
 (function () {
   'use strict';
@@ -17,34 +17,54 @@
   canvas.style.height = H + 'px';
   ctx.scale(DPR, DPR);
 
-  // ─── Audio System (Web Audio API for BPM-synced playback) ───────
+  // ─── Audio System ──────────────────────────────────────────────
   let audioCtx = null;
   let musicBuffer = null;
   let musicSource = null;
-  let musicStartTime = 0;     // audioCtx.currentTime when music started
   let musicPlaying = false;
   let musicLoaded = false;
-  let needsUserGesture = true; // mobile requires tap to start audio
+  let needsUserGesture = true;
+
+  const sfxBuffers = {};
 
   function loadMusic() {
     return fetch('Assets/audio/smooth-jazz-loop.mp3')
-      .then(res => res.arrayBuffer())
+      .then(r => r.arrayBuffer())
       .then(buf => {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         return audioCtx.decodeAudioData(buf);
       })
-      .then(decoded => {
-        musicBuffer = decoded;
-        musicLoaded = true;
-        console.log(`Music loaded: ${decoded.duration.toFixed(1)}s`);
-      })
-      .catch(err => console.warn('Music load failed:', err));
+      .then(decoded => { musicBuffer = decoded; musicLoaded = true; })
+      .catch(e => console.warn('Music load failed:', e));
+  }
+
+  function loadSfx(name, url) {
+    return fetch(url)
+      .then(r => r.arrayBuffer())
+      .then(buf => audioCtx ? audioCtx.decodeAudioData(buf) : null)
+      .then(decoded => { if (decoded) sfxBuffers[name] = decoded; })
+      .catch(() => {});
+  }
+
+  function loadAllAudio() {
+    return loadMusic().then(() => Promise.all([
+      loadSfx('fart-sm', 'Assets/audio/fart-sm.mp3'),
+      loadSfx('fart-md', 'Assets/audio/fart-md.mp3'),
+      loadSfx('fart-lg', 'Assets/audio/fart-lg.mp3'),
+      loadSfx('fart-gameover', 'Assets/audio/fart relief.mp3'),
+    ]));
+  }
+
+  function playSfx(name) {
+    if (!audioCtx || !sfxBuffers[name]) return;
+    const src = audioCtx.createBufferSource();
+    src.buffer = sfxBuffers[name];
+    src.connect(audioCtx.destination);
+    src.start(0);
   }
 
   function startMusic() {
     if (!musicLoaded || !audioCtx) return;
-
-    // Resume context first (required on mobile), then start playback
     const doStart = () => {
       stopMusic();
       musicSource = audioCtx.createBufferSource();
@@ -52,11 +72,9 @@
       musicSource.loop = true;
       musicSource.connect(audioCtx.destination);
       musicSource.start(0);
-      musicStartTime = audioCtx.currentTime;
       musicPlaying = true;
       needsUserGesture = false;
     };
-
     if (audioCtx.state === 'suspended') {
       audioCtx.resume().then(doStart);
     } else {
@@ -65,23 +83,8 @@
   }
 
   function stopMusic() {
-    if (musicSource) {
-      try { musicSource.stop(); } catch (e) {}
-      musicSource = null;
-    }
+    if (musicSource) { try { musicSource.stop(); } catch (e) {} musicSource = null; }
     musicPlaying = false;
-  }
-
-  function pauseMusic() {
-    if (audioCtx && musicPlaying) {
-      audioCtx.suspend();
-    }
-  }
-
-  function resumeMusic() {
-    if (audioCtx && audioCtx.state === 'suspended') {
-      audioCtx.resume();
-    }
   }
 
   // ─── World Config ───────────────────────────────────────────────
@@ -89,38 +92,46 @@
     bpm: 85,
     get beatInterval() { return 60000 / this.bpm; },
     bubbleTravelTime: 1800,
-    beatOffsetMs: 20,            // delay bubbles by ~20ms to sync with music
+    beatOffsetMs: 200,           // FIX #1: shift bubbles 200ms later to land on beat
     tapZoneY: H * 0.65,
     bubbleSpawnY: -60,
     bubbleSize: 70,
     tapZoneSize: 90,
-    countdownBeats: 3,           // 3-2-1 countdown before gameplay starts
+    countdownBeats: 3,
 
-    // Timing windows
     perfectWindow: 30,
     goodWindow: 80,
 
-    // Meter effects per tap result
-    meterPerfect: -0.02,       // PERFECT reduces meter
-    meterGood: 0,              // GOOD is neutral — no meter change
-    meterMiss: 0.08,           // only MISS fills the meter
+    meterPerfect: -0.10,         // PERFECT reduces meter by 1 segment
+    meterGood: 0,
+    meterMiss: 0.10,             // FIX #2: exactly 10% per miss (10 segments)
 
-    // Passive meter (only fills when passengers are present)
-    meterBaseRate: 0,            // no passive fill without passengers
-    meterPerPassenger: 0.008,    // +0.8% per second per passenger
+    meterBaseRate: 0,
+    meterPerPassenger: 0.008,
     meterComboDecay: -0.015,
 
-    // Combo
     comboPopupDuration: 600,
 
-    // Floor system
-    beatsPerFloor: 12,           // beats of rhythm before elevator stops
-    floorTransitionDuration: 2000, // ms for door open/close animation
-    totalFloors: 15,             // World 1 has 15 floors
+    // FIX #3: 30-second floors. At 85 BPM, 30s = ~42 beats
+    beatsPerFloor: 42,
+    totalFloors: 15,
 
-    // Passenger
-    passengerSlideInDuration: 600, // ms to slide in from door
-    passengerHeight: H * 0.28,    // rendered passenger height
+    // FIX #4: Extended floor transition for full door sequence
+    // Phases: ding (500ms) → doors open (800ms) → passenger slide (800ms) → doors close (800ms) → countdown (3 beats)
+    floorDingDuration: 500,
+    floorDoorsOpenDuration: 800,
+    floorPassengerSlideDuration: 800,
+    floorDoorsCloseDuration: 800,
+
+    passengerHeight: H * 0.28,
+
+    // FIX #6: Fart sound thresholds (segment-based)
+    fartThresholds: [
+      { level: 0.30, sfx: 'fart-sm' },
+      { level: 0.50, sfx: 'fart-md' },
+      { level: 0.70, sfx: 'fart-lg' },
+      { level: 1.00, sfx: 'fart-gameover' },
+    ],
   };
 
   // ─── Asset Manifest ─────────────────────────────────────────────
@@ -134,7 +145,6 @@
     comboPopupPerfect: 'Assets/ui/combo-popup-perfect.png',
     comboPopupGood: 'Assets/ui/combo-popup-good.png',
     comboPopupMiss: 'Assets/ui/combo-popup-miss.png',
-    // Passenger: businessman
     paxBusinessmanIdle: 'Assets/characters/pax-businessman-idle.png',
     paxBusinessmanSuspicious: 'Assets/characters/pax-businessman-suspicious.png',
     paxBusinessmanReacting: 'Assets/characters/pax-businessman-reacting.png',
@@ -152,83 +162,58 @@
   }
 
   function loadAllAssets() {
-    return Promise.all(
-      Object.entries(ASSETS).map(([key, src]) => loadImage(key, src))
-    );
+    return Promise.all(Object.entries(ASSETS).map(([k, s]) => loadImage(k, s)));
   }
 
   // ─── Game State ─────────────────────────────────────────────────
   const state = {
-    running: false,
-    lastTime: 0,
+    running: false, lastTime: 0,
 
-    // Rhythm
-    nextBeatTime: 0,
-    bubbles: [],
-    beatCount: 0,             // beats elapsed on current floor
+    nextBeatTime: 0, bubbles: [], beatCount: 0,
 
-    // Fart meter
-    meter: 0.05,
+    // FIX #2: meter as integer segments 0–10, stored as 0.0–1.0 in steps of 0.1
+    meter: 0,
 
-    // Combo
-    combo: 0,
-    bestCombo: 0,
+    combo: 0, bestCombo: 0, activePopup: null,
+    score: 0, perfects: 0, goods: 0, misses: 0,
+    floorPerfects: 0, floorGoods: 0, floorMisses: 0,
 
-    // Popup
-    activePopup: null,
+    // FIX #3: Floor 0 = starting floor with no passengers
+    currentFloor: 0,
 
-    // Score
-    score: 0,
-    perfects: 0,
-    goods: 0,
-    misses: 0,
-
-    // Floor tracking
-    floorPerfects: 0,         // perfects on current floor
-    floorGoods: 0,
-    floorMisses: 0,
-
-    // Floor system
-    currentFloor: 1,
-    floorPhase: 'riding',     // 'riding' | 'stopping' | 'doors' | 'departing'
+    // FIX #4: Multi-phase floor transition
+    // 'riding' | 'ding' | 'doors-open' | 'pax-slide' | 'doors-close' | 'countdown'
+    floorPhase: 'riding',
     floorTransitionStart: 0,
     rhythmPaused: false,
 
-    // Passengers in elevator
     passengers: [],
 
-    // Countdown (3-2-1 before gameplay)
-    countdownPhase: true,        // true during countdown
+    // Countdown
+    countdownPhase: true,
     countdownStartTime: 0,
-    countdownNumber: 3,          // current number showing
 
-    // Game over
+    // FIX #6: Track which fart thresholds have fired this floor
+    fartsFiredThisFloor: new Set(),
+
     gameOver: false,
   };
 
-  // ─── Passenger Object ───────────────────────────────────────────
+  // ─── Passenger ──────────────────────────────────────────────────
   function createPassenger(type, side) {
     return {
-      type: type,              // 'businessman' (more types later)
-      side: side,              // 'left' or 'right' of Gino
-      state: 'idle',           // 'idle' | 'suspicious' | 'reacting'
-      slideProgress: 0,        // 0 = at door, 1 = in position
-      slideStartTime: 0,
-      boarding: true,          // true while sliding in
-      exiting: false,          // true while sliding out
+      type, side, state: 'idle',
+      slideProgress: 0, slideStartTime: 0,
+      boarding: false, exiting: false,
     };
   }
 
-  // ─── Scene Layout ──────────────────────────────────────────────
+  // ─── Layout ─────────────────────────────────────────────────────
   function getGinoLayout() {
     const img = images.ginoIdle;
     const targetH = H * 0.32;
     const scale = targetH / img.height;
-    const drawW = img.width * scale;
-    const drawH = targetH;
-    const drawX = (W - drawW) / 2;
-    const drawY = H - drawH - 50;
-    return { drawW, drawH, drawX, drawY };
+    return { drawW: img.width * scale, drawH: targetH, drawX: (W - img.width * scale) / 2, drawY: H - targetH - 50 };
   }
 
   function getFartMeterLayout() {
@@ -236,359 +221,372 @@
     const targetH = H * 0.52;
     const scale = targetH / emptyImg.height;
     const drawW = emptyImg.width * scale * 1.5;
-    const drawH = targetH;
-    const drawX = W - drawW - 12;
-    const drawY = H * 0.06;
-    return { drawW, drawH, drawX, drawY, scale };
+    return { drawW, drawH: targetH, drawX: W - drawW - 12, drawY: H * 0.06, scale };
   }
 
-  function getPassengerLayout(passenger) {
-    const img = getPassengerImage(passenger);
+  function getPassengerLayout(pax) {
+    const img = getPassengerImage(pax);
     const targetH = CONFIG.passengerHeight;
     const scale = targetH / img.height;
     const drawW = img.width * scale;
-    const drawH = targetH;
-
     const gino = getGinoLayout();
-    // Position left or right of Gino
-    let targetX;
-    if (passenger.side === 'left') {
-      targetX = gino.drawX - drawW - 5;
-    } else {
-      targetX = gino.drawX + gino.drawW + 5;
-    }
-
-    // Slide in from center (door) to target position
+    const targetX = pax.side === 'left' ? gino.drawX - drawW - 5 : gino.drawX + gino.drawW + 5;
     const doorX = (W - drawW) / 2;
-    const drawX = doorX + (targetX - doorX) * passenger.slideProgress;
-    const drawY = H - drawH - 50;
-
-    return { drawW, drawH, drawX, drawY };
+    return { drawW, drawH: targetH, drawX: doorX + (targetX - doorX) * pax.slideProgress, drawY: H - targetH - 50 };
   }
 
-  function getPassengerImage(passenger) {
-    if (passenger.type === 'businessman') {
-      if (passenger.state === 'reacting') return images.paxBusinessmanReacting;
-      if (passenger.state === 'suspicious') return images.paxBusinessmanSuspicious;
-      return images.paxBusinessmanIdle;
-    }
+  function getPassengerImage(pax) {
+    if (pax.state === 'reacting') return images.paxBusinessmanReacting;
+    if (pax.state === 'suspicious') return images.paxBusinessmanSuspicious;
     return images.paxBusinessmanIdle;
   }
 
-  // ─── Bubble Management ──────────────────────────────────────────
+  // ─── Bubbles ────────────────────────────────────────────────────
   function spawnBubble(beatTime) {
     const adjusted = beatTime + CONFIG.beatOffsetMs;
-    state.bubbles.push({
-      spawnTime: adjusted - CONFIG.bubbleTravelTime,
-      hitTime: adjusted,
-      hit: false,
-      missed: false,
-    });
+    state.bubbles.push({ spawnTime: adjusted - CONFIG.bubbleTravelTime, hitTime: adjusted, hit: false, missed: false });
   }
 
   function getBubbleY(bubble, now) {
-    const elapsed = now - bubble.spawnTime;
-    const progress = elapsed / CONFIG.bubbleTravelTime;
+    const progress = (now - bubble.spawnTime) / CONFIG.bubbleTravelTime;
     return CONFIG.bubbleSpawnY + (CONFIG.tapZoneY - CONFIG.bubbleSpawnY) * progress;
   }
 
   // ─── Tap Handling ───────────────────────────────────────────────
-  function onTap() {
-    if (state.gameOver || state.rhythmPaused) return;
+  function handleTap() {
+    if (state.gameOver) { restartGame(); startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
+    if (needsUserGesture) { startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
+    if (state.rhythmPaused || state.countdownPhase) return;
 
     const now = performance.now();
-    let closestBubble = null;
-    let closestOffset = Infinity;
-
-    for (const bubble of state.bubbles) {
-      if (bubble.hit || bubble.missed) continue;
-      const offset = Math.abs(now - bubble.hitTime);
-      if (offset < closestOffset) {
-        closestOffset = offset;
-        closestBubble = bubble;
-      }
+    let closest = null, closestOff = Infinity;
+    for (const b of state.bubbles) {
+      if (b.hit || b.missed) continue;
+      const off = Math.abs(now - b.hitTime);
+      if (off < closestOff) { closestOff = off; closest = b; }
     }
+    if (!closest || closestOff > CONFIG.goodWindow) return;
 
-    if (!closestBubble || closestOffset > CONFIG.goodWindow) return;
-
-    closestBubble.hit = true;
-
-    if (closestOffset <= CONFIG.perfectWindow) {
-      registerResult('perfect');
-    } else {
-      registerResult('good');
-    }
+    closest.hit = true;
+    state.beatCount++;
+    registerResult(closestOff <= CONFIG.perfectWindow ? 'perfect' : 'good');
   }
 
   function registerResult(type) {
     const now = performance.now();
-
     if (type === 'perfect') {
-      state.meter = Math.max(0, state.meter + CONFIG.meterPerfect);
-      state.combo++;
-      state.perfects++;
-      state.floorPerfects++;
+      // FIX #2: snap meter to segment boundaries
+      state.meter = Math.max(0, roundToSegment(state.meter + CONFIG.meterPerfect));
+      state.combo++; state.perfects++; state.floorPerfects++;
       state.score += 100 * (1 + Math.floor(state.combo / 5) * 0.1);
       showPopup('perfect', now);
     } else if (type === 'good') {
-      state.meter = Math.min(1, state.meter + CONFIG.meterGood);
-      state.combo = 0;
-      state.goods++;
-      state.floorGoods++;
+      state.combo = 0; state.goods++; state.floorGoods++;
       state.score += 50;
       showPopup('good', now);
     } else {
-      state.meter = Math.min(1, state.meter + CONFIG.meterMiss);
-      state.combo = 0;
-      state.misses++;
-      state.floorMisses++;
+      // FIX #2: each MISS = exactly +10%
+      state.meter = Math.min(1, roundToSegment(state.meter + CONFIG.meterMiss));
+      state.combo = 0; state.misses++; state.floorMisses++;
       showPopup('miss', now);
     }
 
     if (state.combo > state.bestCombo) state.bestCombo = state.combo;
-    if (state.meter >= 1.0) { state.meter = 1.0; state.gameOver = true; stopMusic(); }
+
+    // FIX #6: Check fart thresholds
+    checkFartThresholds();
+
+    if (state.meter >= 1.0) {
+      state.meter = 1.0;
+      state.gameOver = true;
+      stopMusic();
+    }
   }
 
-  function showPopup(type, time) {
-    state.activePopup = { type, startTime: time };
+  // FIX #2: Round to nearest 0.1 segment
+  function roundToSegment(val) {
+    return Math.round(val * 10) / 10;
   }
 
-  // ─── Floor Precision & Passenger Exit ───────────────────────────
-  // PRD formula: Floor precision score = (PERFECT*2 + GOOD*1) / (total beats*2) * 100
+  function showPopup(type, time) { state.activePopup = { type, startTime: time }; }
+
+  // FIX #6: Fart sounds at thresholds, once per floor
+  function checkFartThresholds() {
+    for (const t of CONFIG.fartThresholds) {
+      if (state.meter >= t.level && !state.fartsFiredThisFloor.has(t.level)) {
+        state.fartsFiredThisFloor.add(t.level);
+        playSfx(t.sfx);
+      }
+    }
+  }
+
+  // ─── Floor Precision & Exit ─────────────────────────────────────
   function getFloorPrecision() {
-    const totalBeats = state.floorPerfects + state.floorGoods + state.floorMisses;
-    if (totalBeats === 0) return 100;
-    return ((state.floorPerfects * 2 + state.floorGoods * 1) / (totalBeats * 2)) * 100;
+    const total = state.floorPerfects + state.floorGoods + state.floorMisses;
+    if (total === 0) return 100;
+    return ((state.floorPerfects * 2 + state.floorGoods) / (total * 2)) * 100;
   }
 
-  // PRD exit rules:
-  // Score ≥ 70% → 2 passengers exit at next floor
-  // Score 71–100% → 1 passenger exits
-  // Score 51–70% → 0 passengers exit
-  // Score < 50% → 0 exit, 1 extra boards
-  function processFloorEnd() {
+  // FIX #5: Passengers only board during door sequence, never teleport
+  function schedulePassengerBoarding() {
+    if (state.currentFloor < 1) return; // Floor 0 = no passengers
     const precision = getFloorPrecision();
 
-    // Determine exits
+    // Exits
     let exits = 0;
-    let extraBoards = 0;
-    if (precision >= 70) {
-      exits = precision >= 90 ? 2 : 1;
-    } else if (precision < 50) {
-      extraBoards = 1;
-    }
+    if (precision >= 90) exits = 2;
+    else if (precision >= 70) exits = 1;
 
-    // Remove exiting passengers (slide out)
     for (let i = 0; i < exits && state.passengers.length > 0; i++) {
       const pax = state.passengers[state.passengers.length - 1];
       pax.exiting = true;
       pax.slideStartTime = performance.now();
     }
 
-    // Board new passenger (always board 1 on odd floors, or if extraBoards)
-    const shouldBoard = (state.currentFloor % 2 === 0) || extraBoards > 0;
-    if (shouldBoard && state.passengers.length < 3) {
-      // Determine side: alternate left/right
-      const side = state.passengers.filter(p => !p.exiting).length % 2 === 0 ? 'left' : 'right';
-      const newPax = createPassenger('businessman', side);
-      newPax.slideStartTime = performance.now();
-      newPax.boarding = true;
-      state.passengers.push(newPax);
-    }
+    // FIX #3: Board on floors ≥ 1 (every floor for testing)
+    const shouldBoard = state.currentFloor >= 1;
+    const extraBoards = precision < 50 ? 1 : 0;
 
-    // Reset floor stats
-    state.floorPerfects = 0;
-    state.floorGoods = 0;
-    state.floorMisses = 0;
+    if ((shouldBoard || extraBoards > 0) && state.passengers.filter(p => !p.exiting).length < 3) {
+      const activeCount = state.passengers.filter(p => !p.exiting).length;
+      const side = activeCount % 2 === 0 ? 'left' : 'right';
+      const newPax = createPassenger('businessman', side);
+      // FIX #5: Don't set boarding yet — that happens in 'pax-slide' phase
+      state.pendingPassenger = newPax;
+    }
   }
 
-  // ─── Passenger State Updates ────────────────────────────────────
-  function updatePassengers(now, dt) {
+  // ─── Passenger Updates ──────────────────────────────────────────
+  function updatePassengers(now) {
     for (let i = state.passengers.length - 1; i >= 0; i--) {
       const pax = state.passengers[i];
 
-      // Update slide animation
       if (pax.boarding) {
         const elapsed = now - pax.slideStartTime;
-        pax.slideProgress = Math.min(1, elapsed / CONFIG.passengerSlideInDuration);
+        pax.slideProgress = Math.min(1, elapsed / CONFIG.floorPassengerSlideDuration);
         if (pax.slideProgress >= 1) pax.boarding = false;
       }
 
       if (pax.exiting) {
         const elapsed = now - pax.slideStartTime;
-        pax.slideProgress = Math.max(0, 1 - elapsed / CONFIG.passengerSlideInDuration);
-        if (pax.slideProgress <= 0) {
-          state.passengers.splice(i, 1);
-          continue;
-        }
+        pax.slideProgress = Math.max(0, 1 - elapsed / CONFIG.floorPassengerSlideDuration);
+        if (pax.slideProgress <= 0) { state.passengers.splice(i, 1); continue; }
       }
 
-      // Update visual state based on meter
-      if (state.meter >= 0.75) {
-        pax.state = 'reacting';
-      } else if (state.meter >= 0.50) {
-        pax.state = 'suspicious';
-      } else {
-        pax.state = 'idle';
-      }
+      // Visual state from meter
+      if (state.meter >= 0.70) pax.state = 'reacting';
+      else if (state.meter >= 0.50) pax.state = 'suspicious';
+      else pax.state = 'idle';
     }
   }
 
   // ─── Update Logic ──────────────────────────────────────────────
   function update(now, dt) {
     if (state.gameOver) return;
-
     const dtSec = dt / 1000;
 
-    // Update passengers (animations + state)
-    updatePassengers(now, dt);
+    updatePassengers(now);
 
-    // Floor transition logic
-    if (state.floorPhase === 'doors') {
+    // ── Floor transition state machine ──
+    if (state.floorPhase !== 'riding' && state.floorPhase !== 'countdown') {
       const elapsed = now - state.floorTransitionStart;
-      if (elapsed >= CONFIG.floorTransitionDuration) {
-        // Transition done — process floor end, advance floor, resume rhythm
-        processFloorEnd();
-        state.currentFloor++;
 
-        if (state.currentFloor > CONFIG.totalFloors) {
-          // Level complete!
-          state.gameOver = true;
-          stopMusic();
-          return;
+      if (state.floorPhase === 'ding') {
+        if (elapsed >= CONFIG.floorDingDuration) {
+          state.floorPhase = 'doors-open';
+          state.floorTransitionStart = now;
+          // Process exits and schedule new passenger
+          schedulePassengerBoarding();
         }
+      } else if (state.floorPhase === 'doors-open') {
+        if (elapsed >= CONFIG.floorDoorsOpenDuration) {
+          state.floorPhase = 'pax-slide';
+          state.floorTransitionStart = now;
+          // FIX #5: Start passenger slide-in NOW (during doors open)
+          if (state.pendingPassenger) {
+            state.pendingPassenger.boarding = true;
+            state.pendingPassenger.slideStartTime = now;
+            state.pendingPassenger.slideProgress = 0;
+            state.passengers.push(state.pendingPassenger);
+            state.pendingPassenger = null;
+          }
+        }
+      } else if (state.floorPhase === 'pax-slide') {
+        if (elapsed >= CONFIG.floorPassengerSlideDuration) {
+          state.floorPhase = 'doors-close';
+          state.floorTransitionStart = now;
+        }
+      } else if (state.floorPhase === 'doors-close') {
+        if (elapsed >= CONFIG.floorDoorsCloseDuration) {
+          // Advance floor, start countdown
+          state.currentFloor++;
+          state.floorPerfects = 0; state.floorGoods = 0; state.floorMisses = 0;
+          state.fartsFiredThisFloor = new Set();
 
-        state.floorPhase = 'riding';
-        state.rhythmPaused = false;
-        state.beatCount = 0;
-        state.nextBeatTime = now + CONFIG.beatInterval;
-        resumeMusic();
+          if (state.currentFloor > CONFIG.totalFloors) {
+            state.gameOver = true; stopMusic(); return;
+          }
+
+          state.floorPhase = 'countdown';
+          state.countdownPhase = true;
+          state.countdownStartTime = now;
+        }
       }
-      return; // skip rhythm updates during door transition
+      return;
     }
 
-    // Skip rhythm during countdown
+    // ── Countdown phase ──
     if (state.countdownPhase) return;
 
-    // Spawn bubbles on beat
+    // ── Normal riding phase ──
+    // Spawn bubbles
     while (state.nextBeatTime <= now + CONFIG.bubbleTravelTime) {
       spawnBubble(state.nextBeatTime);
       state.nextBeatTime += CONFIG.beatInterval;
     }
 
-    // Check for missed bubbles
-    for (const bubble of state.bubbles) {
-      if (!bubble.hit && !bubble.missed) {
-        if (now - bubble.hitTime > CONFIG.goodWindow) {
-          bubble.missed = true;
-          state.beatCount++;
-          registerResult('miss');
-        }
+    // Missed bubbles
+    for (const b of state.bubbles) {
+      if (!b.hit && !b.missed && now - b.hitTime > CONFIG.goodWindow) {
+        b.missed = true;
+        state.beatCount++;
+        registerResult('miss');
       }
     }
 
-    // Track beat count from hits
-    // (beat count for hits is incremented in registerResult via the hit path)
+    // Cleanup
+    state.bubbles = state.bubbles.filter(b => !b.hit && !b.missed && getBubbleY(b, now) < H + 100);
 
-    // Clean up old bubbles
-    state.bubbles = state.bubbles.filter((b) => {
-      if (b.hit || b.missed) return false;
-      return getBubbleY(b, now) < H + 100;
-    });
-
-    // Passive meter fill (base + per passenger)
-    const passengerCount = state.passengers.filter(p => !p.exiting).length;
-    const totalFillRate = CONFIG.meterBaseRate + passengerCount * CONFIG.meterPerPassenger;
-    state.meter = Math.min(1, state.meter + totalFillRate * dtSec);
+    // Passive meter from passengers only
+    const paxCount = state.passengers.filter(p => !p.exiting).length;
+    if (paxCount > 0) {
+      const oldMeter = state.meter;
+      state.meter = Math.min(1, state.meter + paxCount * CONFIG.meterPerPassenger * dtSec);
+      // Check if passive fill crossed a threshold
+      if (Math.floor(state.meter * 10) > Math.floor(oldMeter * 10)) {
+        checkFartThresholds();
+      }
+    }
 
     // Combo decay
     if (state.combo >= 5) {
       state.meter = Math.max(0, state.meter + CONFIG.meterComboDecay * dtSec);
     }
 
-    // Check game over
     if (state.meter >= 1.0) { state.meter = 1.0; state.gameOver = true; stopMusic(); }
 
-    // Clear expired popup
+    // Popup expiry
     if (state.activePopup && now - state.activePopup.startTime > CONFIG.comboPopupDuration) {
       state.activePopup = null;
     }
 
-    // Check if floor is done (enough beats elapsed)
-    if (state.beatCount >= CONFIG.beatsPerFloor && state.floorPhase === 'riding') {
-      state.floorPhase = 'doors';
+    // Floor done?
+    if (state.beatCount >= CONFIG.beatsPerFloor) {
+      state.floorPhase = 'ding';
       state.floorTransitionStart = now;
       state.rhythmPaused = true;
       state.bubbles = [];
-      pauseMusic();
+      state.beatCount = 0;
+      // Music keeps playing (FIX #4)
     }
   }
-
-  // Override registerResult to also count beats for hits
-  const _origRegisterResult = registerResult;
-  // Actually, let's count beats in the hit path too
-  // We need to increment beatCount when a bubble is HIT (not just missed)
-  // Patch onTap to also count beats:
-  const _origOnTap = onTap;
 
   // ─── Render ─────────────────────────────────────────────────────
   function render(now) {
     ctx.clearRect(0, 0, W, H);
 
-    // 1. Elevator background
+    // 1. Background
     ctx.drawImage(images.elevatorBase, 0, 0, W, H);
 
-    // 2. Passengers (behind Gino)
+    // 2. Door overlay during transitions
+    const doorPhase = getDoorOpenAmount(now);
+
+    // 3. Passengers
     drawPassengers();
 
-    // 3. Gino
+    // 4. Gino
     const gino = getGinoLayout();
     ctx.drawImage(images.ginoIdle, gino.drawX, gino.drawY, gino.drawW, gino.drawH);
 
-    // 4. Tap zone ring
-    if (!state.rhythmPaused) drawTapZone();
+    // 5. Door closing overlay
+    if (doorPhase !== null) drawDoors(doorPhase);
 
-    // 5. Falling ghost bubbles
-    if (!state.rhythmPaused) drawBubbles(now);
+    // 6. Tap zone + bubbles (only during riding)
+    if (state.floorPhase === 'riding' && !state.countdownPhase) {
+      drawTapZone();
+      drawBubbles(now);
+    }
 
-    // 6. Fart meter
+    // 7. Fart meter
     const meter = getFartMeterLayout();
     ctx.drawImage(images.fartMeterEmpty, meter.drawX, meter.drawY, meter.drawW, meter.drawH);
     drawMeterFill(meter, state.meter);
 
-    // 7. Critical vignette
-    if (state.meter > 0.75) drawCriticalVignette();
+    // 8. Vignette
+    if (state.meter > 0.70) drawCriticalVignette();
 
-    // 8. Combo popup
+    // 9. Popup
     drawPopup(now);
 
-    // 9. HUD
+    // 10. HUD
     drawComboHUD();
     drawFloorHUD();
 
-    // 10. Floor transition overlay
-    if (state.floorPhase === 'doors') drawFloorTransition(now);
+    // 11. Floor transition text
+    if (state.floorPhase === 'ding' || state.floorPhase === 'doors-open' || state.floorPhase === 'pax-slide' || state.floorPhase === 'doors-close') {
+      drawFloorTransitionText(now);
+    }
 
-    // 11. Game over
-    if (state.gameOver) drawGameOver();
-
-    // 12. Countdown overlay (3-2-1)
+    // 12. Countdown
     if (state.countdownPhase && !needsUserGesture && !state.gameOver) drawCountdown(now);
 
-    // 13. Tap to start overlay (before music starts)
+    // 13. Tap to start
     if (needsUserGesture && !state.gameOver) drawTapToStart();
+
+    // 14. Game over
+    if (state.gameOver) drawGameOver();
+  }
+
+  // FIX #4: Door animation
+  function getDoorOpenAmount(now) {
+    if (state.floorPhase === 'doors-open') {
+      return Math.min(1, (now - state.floorTransitionStart) / CONFIG.floorDoorsOpenDuration);
+    }
+    if (state.floorPhase === 'pax-slide') return 1; // fully open
+    if (state.floorPhase === 'doors-close') {
+      return 1 - Math.min(1, (now - state.floorTransitionStart) / CONFIG.floorDoorsCloseDuration);
+    }
+    return null;
+  }
+
+  function drawDoors(openAmount) {
+    // Draw two door panels sliding apart
+    const doorW = W * 0.4;
+    const doorH = H * 0.55;
+    const doorY = H * 0.18;
+    const maxSlide = doorW * 0.9;
+    const slide = maxSlide * openAmount;
+
+    ctx.save();
+    ctx.fillStyle = '#8a8a7a';
+    // Left door
+    ctx.fillRect(W / 2 - doorW - slide * 0.1, doorY, doorW - slide, doorH);
+    // Right door
+    ctx.fillRect(W / 2 + slide * 0.1, doorY, doorW - slide, doorH);
+
+    // Door frame
+    ctx.strokeStyle = '#666';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(W / 2 - doorW - 2, doorY - 2, doorW * 2 + 4, doorH + 4);
+    ctx.restore();
   }
 
   function drawPassengers() {
     for (const pax of state.passengers) {
       const img = getPassengerImage(pax);
       const layout = getPassengerLayout(pax);
-
       ctx.save();
-      // Fade during slide
-      if (pax.boarding || pax.exiting) {
-        ctx.globalAlpha = pax.slideProgress;
-      }
+      if (pax.boarding || pax.exiting) ctx.globalAlpha = pax.slideProgress;
       ctx.drawImage(img, layout.drawX, layout.drawY, layout.drawW, layout.drawH);
       ctx.restore();
     }
@@ -596,38 +594,39 @@
 
   function drawTapZone() {
     const size = CONFIG.tapZoneSize;
-    const x = W / 2 - size / 2;
-    const y = CONFIG.tapZoneY - size / 2;
-
-    ctx.save();
-    ctx.globalAlpha = 0.3;
+    const x = W / 2 - size / 2, y = CONFIG.tapZoneY - size / 2;
+    ctx.save(); ctx.globalAlpha = 0.3;
     ctx.drawImage(images.tapZoneRing, x - 4, y - 4, size + 8, size + 8);
     ctx.restore();
-
     ctx.drawImage(images.tapZoneRing, x, y, size, size);
   }
 
   function drawBubbles(now) {
-    for (const bubble of state.bubbles) {
-      if (bubble.hit || bubble.missed) continue;
-      const y = getBubbleY(bubble, now);
-      const size = CONFIG.bubbleSize;
-      const x = W / 2 - size / 2;
-      const distFromSpawn = y - CONFIG.bubbleSpawnY;
-      const fadeIn = Math.min(1, distFromSpawn / 80);
-
-      ctx.save();
-      ctx.globalAlpha = fadeIn * 0.85;
+    for (const b of state.bubbles) {
+      if (b.hit || b.missed) continue;
+      const y = getBubbleY(b, now);
+      const size = CONFIG.bubbleSize, x = W / 2 - size / 2;
+      const fadeIn = Math.min(1, (y - CONFIG.bubbleSpawnY) / 80);
+      ctx.save(); ctx.globalAlpha = fadeIn * 0.85;
       ctx.drawImage(images.tapGhostBubble, x, y - size / 2, size, size);
       ctx.restore();
     }
   }
 
+  // FIX #2: Draw meter fill only within tube boundaries, in 10 discrete segments
   function drawMeterFill(meter, fillPercent) {
-    const clamped = Math.max(0, Math.min(1, fillPercent));
+    // Snap to segments for display
+    const segments = Math.round(fillPercent * 10);
+    if (segments <= 0) return;
+    const segFill = segments / 10;
+
     const fillImg = images.fartMeterFillGreen;
-    const fillH = meter.drawH * clamped;
-    const clipY = meter.drawY + meter.drawH - fillH;
+    // The tube area is roughly the inner 80% of the meter image, offset from top/bottom
+    const tubeTopOffset = meter.drawH * 0.06;  // top cap of tube
+    const tubeBotOffset = meter.drawH * 0.12;  // bottom base of tube
+    const tubeH = meter.drawH - tubeTopOffset - tubeBotOffset;
+    const fillH = tubeH * segFill;
+    const clipY = meter.drawY + tubeTopOffset + tubeH - fillH;
 
     ctx.save();
     ctx.beginPath();
@@ -638,15 +637,12 @@
   }
 
   function drawCriticalVignette() {
-    const intensity = (state.meter - 0.75) / 0.25;
+    const intensity = (state.meter - 0.70) / 0.30;
     const pulse = 0.3 + Math.sin(performance.now() / 200) * 0.1;
-    ctx.save();
-    ctx.globalAlpha = intensity * pulse;
-    const gradient = ctx.createRadialGradient(W / 2, H / 2, H * 0.25, W / 2, H / 2, H * 0.6);
-    gradient.addColorStop(0, 'transparent');
-    gradient.addColorStop(1, '#ff0000');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.globalAlpha = intensity * pulse;
+    const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.25, W / 2, H / 2, H * 0.6);
+    g.addColorStop(0, 'transparent'); g.addColorStop(1, '#ff0000');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
     ctx.restore();
   }
 
@@ -655,122 +651,79 @@
     const elapsed = now - state.activePopup.startTime;
     const progress = elapsed / CONFIG.comboPopupDuration;
     if (progress > 1) return;
-
-    let img;
-    if (state.activePopup.type === 'perfect') img = images.comboPopupPerfect;
-    else if (state.activePopup.type === 'good') img = images.comboPopupGood;
-    else img = images.comboPopupMiss;
-
-    const scalePhase = Math.min(progress / 0.15, 1);
-    const fadePhase = progress > 0.5 ? 1 - (progress - 0.5) / 0.5 : 1;
-    const baseW = 160;
-    const baseH = baseW * (img.height / img.width);
-    const scale = 0.6 + scalePhase * 0.4;
-    const drawW = baseW * scale;
-    const drawH = baseH * scale;
-
-    ctx.save();
-    ctx.globalAlpha = fadePhase;
-    ctx.drawImage(img, W / 2 - drawW / 2, CONFIG.tapZoneY - 120 - drawH / 2, drawW, drawH);
+    let img = state.activePopup.type === 'perfect' ? images.comboPopupPerfect :
+              state.activePopup.type === 'good' ? images.comboPopupGood : images.comboPopupMiss;
+    const scaleP = Math.min(progress / 0.15, 1);
+    const fadeP = progress > 0.5 ? 1 - (progress - 0.5) / 0.5 : 1;
+    const baseW = 160, baseH = baseW * (img.height / img.width);
+    const s = 0.6 + scaleP * 0.4;
+    ctx.save(); ctx.globalAlpha = fadeP;
+    ctx.drawImage(img, W / 2 - baseW * s / 2, CONFIG.tapZoneY - 120 - baseH * s / 2, baseW * s, baseH * s);
     ctx.restore();
   }
 
   function drawComboHUD() {
     if (state.combo < 2) return;
     ctx.save();
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-    ctx.font = 'bold 18px Arial, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-    const text = `x${state.combo} COMBO`;
-    const textW = ctx.measureText(text).width;
-    roundRect(ctx, 12, H * 0.12, textW + 20, 30, 6);
-    ctx.fill();
-    ctx.fillStyle = state.combo >= 5 ? '#facc15' : '#ffffff';
-    ctx.fillText(text, 22, H * 0.12 + 6);
-    ctx.restore();
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.font = 'bold 18px Arial';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    const t = `x${state.combo} COMBO`, tw = ctx.measureText(t).width;
+    roundRect(ctx, 12, H * 0.12, tw + 20, 30, 6); ctx.fill();
+    ctx.fillStyle = state.combo >= 5 ? '#facc15' : '#fff';
+    ctx.fillText(t, 22, H * 0.12 + 6); ctx.restore();
   }
 
   function drawFloorHUD() {
     ctx.save();
-    // Floor indicator — top left
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-    roundRect(ctx, 12, 16, 80, 44, 8);
-    ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    roundRect(ctx, 12, 16, 80, 44, 8); ctx.fill();
+    ctx.fillStyle = '#4ade80'; ctx.font = 'bold 20px "Courier New", monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(`F${state.currentFloor}`, 52, 38); ctx.restore();
 
-    ctx.fillStyle = '#4ade80';
-    ctx.font = 'bold 20px "Courier New", monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(`F${state.currentFloor}`, 52, 38);
-    ctx.restore();
-
-    // Passenger count — below floor
     const paxCount = state.passengers.filter(p => !p.exiting).length;
     if (paxCount > 0) {
-      ctx.save();
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-      roundRect(ctx, 12, 66, 80, 28, 6);
-      ctx.fill();
-      ctx.fillStyle = '#fbbf24';
-      ctx.font = '14px Arial, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(`👤 ${paxCount}`, 52, 80);
-      ctx.restore();
+      ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      roundRect(ctx, 12, 66, 80, 28, 6); ctx.fill();
+      ctx.fillStyle = '#fbbf24'; ctx.font = '14px Arial';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(`\u{1F464} ${paxCount}`, 52, 80); ctx.restore();
     }
   }
 
-  function drawFloorTransition(now) {
-    const elapsed = now - state.floorTransitionStart;
-    const progress = elapsed / CONFIG.floorTransitionDuration;
-
-    // Darken briefly
-    const fade = progress < 0.5
-      ? Math.sin(progress * Math.PI)      // fade in then out
-      : Math.sin(progress * Math.PI);
-    const alpha = fade * 0.4;
-
+  // FIX #4: Floor transition text with precision
+  function drawFloorTransitionText(now) {
     ctx.save();
-    ctx.fillStyle = `rgba(0, 0, 0, ${alpha})`;
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
     ctx.fillRect(0, 0, W, H);
 
-    // Show floor text
-    if (progress > 0.2 && progress < 0.8) {
-      const textAlpha = Math.min(1, (progress - 0.2) / 0.1) * Math.min(1, (0.8 - progress) / 0.1);
-      ctx.globalAlpha = textAlpha;
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 28px Arial, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
+    const precision = getFloorPrecision();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 32px Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(`FLOOR ${state.currentFloor + 1}`, W / 2, H * 0.38);
 
-      const precision = getFloorPrecision();
-      ctx.fillText(`Floor ${state.currentFloor + 1}`, W / 2, H * 0.4);
+    ctx.font = '20px Arial';
+    const precColor = precision >= 70 ? '#4ade80' : precision >= 50 ? '#fbbf24' : '#ef4444';
+    ctx.fillStyle = precColor;
+    ctx.fillText(`Precision: ${precision.toFixed(0)}%`, W / 2, H * 0.44);
 
-      ctx.font = '18px Arial, sans-serif';
-      const precColor = precision >= 70 ? '#4ade80' : precision >= 50 ? '#fbbf24' : '#ef4444';
-      ctx.fillStyle = precColor;
-      ctx.fillText(`Precision: ${precision.toFixed(0)}%`, W / 2, H * 0.46);
-    }
+    // Show door status
+    ctx.fillStyle = '#aaa'; ctx.font = '14px Arial';
+    if (state.floorPhase === 'ding') ctx.fillText('🔔 Ding!', W / 2, H * 0.50);
+    else if (state.floorPhase === 'doors-open') ctx.fillText('Doors opening...', W / 2, H * 0.50);
+    else if (state.floorPhase === 'pax-slide') ctx.fillText('Passenger boarding...', W / 2, H * 0.50);
+    else if (state.floorPhase === 'doors-close') ctx.fillText('Doors closing...', W / 2, H * 0.50);
 
     ctx.restore();
   }
 
   function drawTapToStart() {
-    ctx.save();
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-    ctx.fillRect(0, 0, W, H);
-
+    ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, 0, W, H);
     const pulse = 0.7 + Math.sin(performance.now() / 400) * 0.3;
-    ctx.globalAlpha = pulse;
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 28px Arial, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('🎵 TAP TO START 🎵', W / 2, H * 0.45);
-
-    ctx.globalAlpha = 0.6;
-    ctx.font = '16px Arial, sans-serif';
+    ctx.globalAlpha = pulse; ctx.fillStyle = '#fff'; ctx.font = 'bold 28px Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('\u{1F3B5} TAP TO START \u{1F3B5}', W / 2, H * 0.45);
+    ctx.globalAlpha = 0.6; ctx.font = '16px Arial';
     ctx.fillText('Tap the bubbles to the beat!', W / 2, H * 0.52);
     ctx.restore();
   }
@@ -778,225 +731,97 @@
   function drawCountdown(now) {
     const elapsed = now - state.countdownStartTime;
     const beatMs = CONFIG.beatInterval;
-    const totalBeats = CONFIG.countdownBeats;
-
-    // Which beat are we on? (0-indexed)
     const beatIndex = Math.floor(elapsed / beatMs);
     const beatProgress = (elapsed % beatMs) / beatMs;
 
-    if (beatIndex >= totalBeats) {
-      // Countdown done — start gameplay
+    if (beatIndex >= CONFIG.countdownBeats) {
       state.countdownPhase = false;
       state.rhythmPaused = false;
+      state.floorPhase = 'riding';
       state.nextBeatTime = now + CONFIG.beatInterval;
       return;
     }
 
-    const number = totalBeats - beatIndex; // 3, 2, 1
-
-    ctx.save();
-    // Slight darken
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
-    ctx.fillRect(0, 0, W, H);
-
-    // Number scales up and fades on each beat
-    const scale = 1 + beatProgress * 0.5;
-    const alpha = 1 - beatProgress * 0.8;
-
-    ctx.globalAlpha = Math.max(0, alpha);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = `bold ${Math.floor(72 * scale)}px Arial, sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+    const number = CONFIG.countdownBeats - beatIndex;
+    ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(0, 0, W, H);
+    const s = 1 + beatProgress * 0.5;
+    ctx.globalAlpha = Math.max(0, 1 - beatProgress * 0.8);
+    ctx.fillStyle = '#fff'; ctx.font = `bold ${Math.floor(72 * s)}px Arial`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(number, W / 2, H * 0.42);
-
-    ctx.globalAlpha = 0.6;
-    ctx.font = '18px Arial, sans-serif';
+    ctx.globalAlpha = 0.6; ctx.font = '18px Arial';
     ctx.fillText('Get ready...', W / 2, H * 0.52);
     ctx.restore();
   }
 
   function drawGameOver() {
-    ctx.save();
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.fillRect(0, 0, W, H);
-
-    // Check if level complete or actual game over
-    const levelComplete = state.currentFloor > CONFIG.totalFloors;
-
-    ctx.fillStyle = levelComplete ? '#4ade80' : '#ef4444';
-    ctx.font = 'bold 42px Arial, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(levelComplete ? 'LEVEL CLEAR!' : 'GAME OVER', W / 2, H * 0.30);
-
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '20px Arial, sans-serif';
+    ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, W, H);
+    const lvlClear = state.currentFloor > CONFIG.totalFloors;
+    ctx.fillStyle = lvlClear ? '#4ade80' : '#ef4444';
+    ctx.font = 'bold 42px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(lvlClear ? 'LEVEL CLEAR!' : 'GAME OVER', W / 2, H * 0.30);
+    ctx.fillStyle = '#fff'; ctx.font = '20px Arial';
     ctx.fillText(`Score: ${Math.floor(state.score)}`, W / 2, H * 0.40);
-    ctx.fillText(`Floor reached: ${Math.min(state.currentFloor, CONFIG.totalFloors)}`, W / 2, H * 0.45);
-    ctx.fillText(`Perfects: ${state.perfects}  Good: ${state.goods}  Miss: ${state.misses}`, W / 2, H * 0.50);
+    ctx.fillText(`Floor: ${Math.min(state.currentFloor, CONFIG.totalFloors)}`, W / 2, H * 0.45);
+    ctx.fillText(`P: ${state.perfects}  G: ${state.goods}  M: ${state.misses}`, W / 2, H * 0.50);
     ctx.fillText(`Best Combo: ${state.bestCombo}`, W / 2, H * 0.55);
-
-    ctx.fillStyle = '#aaa';
-    ctx.font = '16px Arial, sans-serif';
-    ctx.fillText('Tap to restart', W / 2, H * 0.65);
-    ctx.restore();
+    ctx.fillStyle = '#aaa'; ctx.font = '16px Arial';
+    ctx.fillText('Tap to restart', W / 2, H * 0.65); ctx.restore();
   }
 
   function roundRect(ctx, x, y, w, h, r) {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + w - r, y);
-    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-    ctx.lineTo(x + w, y + h - r);
-    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-    ctx.lineTo(x + r, y + h);
-    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-    ctx.lineTo(x, y + r);
-    ctx.quadraticCurveTo(x, y, x + r, y);
-    ctx.closePath();
+    ctx.beginPath(); ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r); ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h); ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r); ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y); ctx.closePath();
   }
 
   // ─── Game Loop ──────────────────────────────────────────────────
   function gameLoop() {
     const now = performance.now();
-    const dt = now - state.lastTime;
+    const dt = Math.min(now - state.lastTime, 100);
     state.lastTime = now;
-    const clampedDt = Math.min(dt, 100);
-
-    update(now, clampedDt);
+    update(now, dt);
     render(now);
   }
 
-  function startGameLoop() {
-    setInterval(gameLoop, 16);
-  }
-
-  // ─── Restart ────────────────────────────────────────────────────
   function restartGame() {
-    state.meter = 0.05;
-    state.combo = 0;
-    state.bestCombo = 0;
-    state.score = 0;
-    state.perfects = 0;
-    state.goods = 0;
-    state.misses = 0;
-    state.floorPerfects = 0;
-    state.floorGoods = 0;
-    state.floorMisses = 0;
-    state.bubbles = [];
-    state.activePopup = null;
-    state.gameOver = false;
-    state.currentFloor = 1;
-    state.floorPhase = 'riding';
-    state.rhythmPaused = true;
-    state.beatCount = 0;
-    state.passengers = [];
-    state.countdownPhase = true;
-    state.countdownStartTime = performance.now();
-    state.lastTime = performance.now();
-    state.nextBeatTime = state.lastTime + CONFIG.beatInterval;
+    Object.assign(state, {
+      meter: 0, combo: 0, bestCombo: 0, score: 0,
+      perfects: 0, goods: 0, misses: 0,
+      floorPerfects: 0, floorGoods: 0, floorMisses: 0,
+      bubbles: [], activePopup: null, gameOver: false,
+      currentFloor: 0, floorPhase: 'riding',
+      rhythmPaused: true, beatCount: 0, passengers: [],
+      countdownPhase: true, countdownStartTime: performance.now(),
+      fartsFiredThisFloor: new Set(),
+      lastTime: performance.now(),
+      nextBeatTime: performance.now() + CONFIG.beatInterval,
+    });
+    state.pendingPassenger = null;
   }
 
-  // ─── Loading Screen ─────────────────────────────────────────────
-  function showLoading() {
-    ctx.fillStyle = '#1a1a2e';
-    ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '20px Arial, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('Loading...', W / 2, H / 2);
-  }
-
-  // ─── Init ───────────────────────────────────────────────────────
   function init() {
-    showLoading();
+    ctx.fillStyle = '#1a1a2e'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff'; ctx.font = '20px Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('Loading...', W / 2, H / 2);
 
-    Promise.all([loadAllAssets(), loadMusic()])
+    Promise.all([loadAllAssets(), loadAllAudio()])
       .then(() => {
-        console.log('FART ALARM — Phase 3 ready (music loaded)');
-
-        // Patch onTap to count beats on hit
-        canvas.addEventListener('mousedown', (e) => {
-          e.preventDefault();
-          if (needsUserGesture) { startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; }
-          if (state.gameOver) { restartGame(); startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
-          if (state.rhythmPaused) return;
-
-          const now = performance.now();
-          let closestBubble = null;
-          let closestOffset = Infinity;
-
-          for (const bubble of state.bubbles) {
-            if (bubble.hit || bubble.missed) continue;
-            const offset = Math.abs(now - bubble.hitTime);
-            if (offset < closestOffset) {
-              closestOffset = offset;
-              closestBubble = bubble;
-            }
-          }
-
-          if (!closestBubble || closestOffset > CONFIG.goodWindow) return;
-
-          closestBubble.hit = true;
-          state.beatCount++;
-
-          if (closestOffset <= CONFIG.perfectWindow) {
-            registerResult('perfect');
-          } else {
-            registerResult('good');
-          }
-        });
-
-        canvas.addEventListener('touchstart', (e) => {
-          e.preventDefault();
-          if (needsUserGesture) { startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; }
-          if (state.gameOver) { restartGame(); startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
-          if (state.rhythmPaused) return;
-
-          const now = performance.now();
-          let closestBubble = null;
-          let closestOffset = Infinity;
-
-          for (const bubble of state.bubbles) {
-            if (bubble.hit || bubble.missed) continue;
-            const offset = Math.abs(now - bubble.hitTime);
-            if (offset < closestOffset) {
-              closestOffset = offset;
-              closestBubble = bubble;
-            }
-          }
-
-          if (!closestBubble || closestOffset > CONFIG.goodWindow) return;
-
-          closestBubble.hit = true;
-          state.beatCount++;
-
-          if (closestOffset <= CONFIG.perfectWindow) {
-            registerResult('perfect');
-          } else {
-            registerResult('good');
-          }
-        }, { passive: false });
-
+        console.log('FART ALARM — Phase 3b ready');
+        canvas.addEventListener('mousedown', (e) => { e.preventDefault(); handleTap(); });
+        canvas.addEventListener('touchstart', (e) => { e.preventDefault(); handleTap(); }, { passive: false });
         state.lastTime = performance.now();
         state.nextBeatTime = state.lastTime + CONFIG.beatInterval;
         state.running = true;
-
-        startGameLoop();
+        setInterval(gameLoop, 16);
       })
-      .catch((err) => {
-        console.error('Asset load failed:', err);
-        ctx.fillStyle = '#1a1a2e';
-        ctx.fillRect(0, 0, W, H);
-        ctx.fillStyle = '#ef4444';
-        ctx.font = '16px Arial, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText('Failed to load assets', W / 2, H / 2 - 12);
-        ctx.fillStyle = '#aaa';
-        ctx.font = '12px Arial, sans-serif';
-        ctx.fillText(err.message, W / 2, H / 2 + 12);
+      .catch(err => {
+        ctx.fillStyle = '#1a1a2e'; ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = '#ef4444'; ctx.font = '16px Arial'; ctx.textAlign = 'center';
+        ctx.fillText('Failed to load: ' + err.message, W / 2, H / 2);
       });
   }
 
