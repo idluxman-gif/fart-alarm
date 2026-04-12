@@ -122,7 +122,7 @@
     bpm: 85,
     get beatInterval() { return 60000 / this.bpm; },
     bubbleTravelTime: 1800,
-    beatOffsetMs: 200,           // shift bubbles to land on beat
+    beatOffsetMs: 400,           // shift bubbles to land on beat
     tapZoneY: H * 0.65,
     bubbleSpawnY: -60,
     bubbleSize: 70,
@@ -296,8 +296,9 @@
   function getPassengerLayout(pax) {
     const drawImg = getPassengerImage(pax);
     const slot = PAX_SLOTS[pax.slotIndex] || PAX_SLOTS[0];
-    const targetH = CONFIG.passengerHeight * slot.scale;
-    // Always scale by the DRAWN image's own height so it fits targetH exactly
+    let targetH = CONFIG.passengerHeight * slot.scale;
+    // Gameover sprite is hunched — reduce height slightly so he doesn't look oversized
+    if (state.gameOver && drawImg === images.paxBusinessmanGameover) targetH *= 0.85;
     const scale = targetH / drawImg.height;
     const drawW = drawImg.width * scale;
     const drawH = targetH;
