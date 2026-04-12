@@ -159,6 +159,7 @@
     ginoFart4: 'Assets/characters/gino-fart4.png',
     // Fart fume clouds
     fartCloudSmall: 'Assets/characters/f1-small.png',
+    gasCloud: 'Assets/characters/gas.png',
     fartCloud2: 'Assets/characters/f2.png',
     fartCloud3: 'Assets/characters/f3.png',
     fartCloud4: 'Assets/characters/f4.png',
@@ -560,7 +561,10 @@
     // 2. Floor LED image overlay (replaces dynamic text)
     drawFloorLED();
 
-    // 3. Passengers (walking sprites during boarding)
+    // 3. Gas cloud BEHIND passengers and Gino (grows during game over)
+    if (state.gameOver) drawFumeCloud();
+
+    // 4. Passengers (walking sprites during boarding)
     drawPassengers(now);
 
     // 5. Gino (meter-reactive sprite)
@@ -595,12 +599,8 @@
     // 12. Tap to start
     if (needsUserGesture && !state.gameOver) drawTapToStart();
 
-    // 13. Game over — fume cloud fills first, then text fades in
-    if (state.gameOver) {
-      // Fume cloud ON TOP of everything (visible layer, frame-based animation)
-      drawFumeCloud();
-      drawGameOver(now);
-    }
+    // 13. Game over text (fume cloud already drawn behind Gino at step 3)
+    if (state.gameOver) drawGameOver(now);
   }
 
   function drawPassengers(now) {
@@ -651,9 +651,7 @@
     ctx.drawImage(ginoImg, drawX, gino.drawY, drawW, gino.drawH);
   }
 
-  // Growing green fume cloud on game over — starts tiny, fills the elevator over 5 seconds
-  // Procedural green fume — expanding radial gradient, no images
-  // Uses a persistent timer that increments each frame (bulletproof, no timestamp dependency)
+  // Gas cloud animation — gas.png behind Gino, starts small and scales up smoothly
   let fumeFrame = 0;
   const FUME_TOTAL_FRAMES = 300; // ~5 seconds at 60fps
 
@@ -661,41 +659,30 @@
     fumeFrame++;
     const t = Math.min(1, fumeFrame / FUME_TOTAL_FRAMES);
 
+    // Smooth ease-out curve for natural expansion
+    const eased = 1 - Math.pow(1 - t, 3);
+
+    const gasImg = images.gasCloud;
     const gino = getGinoLayout();
-    const originX = W * 0.45;
-    const originY = gino.drawY + gino.drawH * 0.55;
 
-    // Expanding radius from tiny to filling the canvas
-    const maxRadius = Math.max(W, H) * 0.9;
-    const radius = 10 + t * maxRadius;
+    // gas.png starts tiny behind Gino's butt and scales up to fill the elevator
+    // Origin: Gino's lower back area
+    const originX = gino.drawX + gino.drawW * 0.3;
+    const originY = gino.drawY + gino.drawH * 0.5;
 
-    // Radial gradient: green center fading outward
+    // Scale: starts at 5% of final size, ends at filling most of the elevator
+    const finalW = W * 1.1;
+    const finalH = H * 0.7;
+    const drawW = finalW * (0.05 + eased * 0.95);
+    const drawH = finalH * (0.05 + eased * 0.95);
+
+    // Position: centered on origin point, drifts slightly upward as it grows
+    const drawX = originX - drawW * 0.4;
+    const drawY = originY - drawH * 0.3 - eased * H * 0.1;
+
     ctx.save();
-    const grad = ctx.createRadialGradient(originX, originY, 0, originX, originY, radius);
-    grad.addColorStop(0, `rgba(120, 160, 60, ${0.45 * t})`);
-    grad.addColorStop(0.4, `rgba(100, 150, 50, ${0.35 * t})`);
-    grad.addColorStop(0.7, `rgba(80, 130, 40, ${0.2 * t})`);
-    grad.addColorStop(1, 'rgba(60, 110, 30, 0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, W, H);
-    ctx.restore();
-
-    // Add some "cloud blobs" that drift upward for organic feel
-    ctx.save();
-    const blobCount = Math.floor(t * 8);
-    for (let i = 0; i < blobCount; i++) {
-      const seed = i * 137.5; // golden angle for distribution
-      const blobT = Math.max(0, (fumeFrame - i * 20) / FUME_TOTAL_FRAMES);
-      const blobRadius = 20 + blobT * 80;
-      const blobX = originX + Math.cos(seed) * t * W * 0.35;
-      const blobY = originY + Math.sin(seed) * t * H * 0.25 - blobT * 60;
-
-      const blobGrad = ctx.createRadialGradient(blobX, blobY, 0, blobX, blobY, blobRadius);
-      blobGrad.addColorStop(0, `rgba(110, 155, 55, ${0.25 * Math.min(1, blobT * 3)})`);
-      blobGrad.addColorStop(1, 'rgba(90, 140, 40, 0)');
-      ctx.fillStyle = blobGrad;
-      ctx.fillRect(blobX - blobRadius, blobY - blobRadius, blobRadius * 2, blobRadius * 2);
-    }
+    ctx.globalAlpha = 0.75;
+    ctx.drawImage(gasImg, drawX, drawY, drawW, drawH);
     ctx.restore();
   }
 
