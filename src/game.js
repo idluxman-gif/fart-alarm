@@ -122,7 +122,7 @@
     bpm: 85,
     get beatInterval() { return 60000 / this.bpm; },
     bubbleTravelTime: 1800,
-    beatOffsetMs: 250,           // shift bubbles to land on beat
+    beatOffsetMs: 200,           // shift bubbles to land on beat
     tapZoneY: H * 0.65,
     bubbleSpawnY: -60,
     bubbleSize: 70,
@@ -294,16 +294,13 @@
   }
 
   function getPassengerLayout(pax) {
-    const img = getPassengerImage(pax);
+    const drawImg = getPassengerImage(pax);
     const slot = PAX_SLOTS[pax.slotIndex] || PAX_SLOTS[0];
     const targetH = CONFIG.passengerHeight * slot.scale;
-    const maxW = W * 0.28; // cap width so wide sprites (gameover) don't overflow
-    let scale = targetH / img.height;
-    const drawWRaw = img.width * scale;
-    if (drawWRaw > maxW) scale = maxW / img.width; // constrain by width instead
-    const drawW = img.width * scale;
-
-    const drawH = img.height * scale;
+    // Always scale by the DRAWN image's own height so it fits targetH exactly
+    const scale = targetH / drawImg.height;
+    const drawW = drawImg.width * scale;
+    const drawH = targetH;
 
     // Target position from slot
     const targetX = slot.x * W;
