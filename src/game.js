@@ -123,7 +123,7 @@
     floorPassengerSlideDuration: 1200,   // ~4 walking steps at 250ms each
     floorDoorsCloseDuration: 800,
 
-    passengerHeight: H * 0.28,
+    passengerHeight: H * 0.32,    // same height as Gino
 
     // FIX #6: Fart sound thresholds (segment-based)
     fartThresholds: [
@@ -214,9 +214,20 @@
   };
 
   // ─── Passenger ──────────────────────────────────────────────────
-  function createPassenger(type, side) {
+  // Passenger slot positions (relative to canvas)
+  // Front row: same size as Gino, standing beside him
+  // Back row: slightly smaller + higher to create depth
+  const PAX_SLOTS = [
+    { id: 'front-left',  x: 0.08, y: 0.62, scale: 1.0,  zIndex: 1 },
+    { id: 'front-right', x: 0.62, y: 0.62, scale: 1.0,  zIndex: 1 },
+    { id: 'back-left',   x: 0.02, y: 0.58, scale: 0.82, zIndex: 0 },
+    { id: 'back-right',  x: 0.68, y: 0.58, scale: 0.82, zIndex: 0 },
+    { id: 'back-center', x: 0.30, y: 0.56, scale: 0.75, zIndex: 0 },
+  ];
+
+  function createPassenger(type, slotIndex) {
     return {
-      type, side, state: 'idle',
+      type, slotIndex, state: 'idle',
       slideProgress: 0, slideStartTime: 0,
       boarding: false, exiting: false,
     };
@@ -240,13 +251,24 @@
 
   function getPassengerLayout(pax) {
     const img = getPassengerImage(pax);
-    const targetH = CONFIG.passengerHeight;
+    const slot = PAX_SLOTS[pax.slotIndex] || PAX_SLOTS[0];
+    const targetH = CONFIG.passengerHeight * slot.scale;
     const scale = targetH / img.height;
     const drawW = img.width * scale;
-    const gino = getGinoLayout();
-    const targetX = pax.side === 'left' ? gino.drawX - drawW - 5 : gino.drawX + gino.drawW + 5;
-    const doorX = (W - drawW) / 2;
-    return { drawW, drawH: targetH, drawX: doorX + (targetX - doorX) * pax.slideProgress, drawY: H - targetH - 50 };
+
+    // Target position from slot
+    const targetX = slot.x * W;
+    const targetY = H - targetH - (50 * slot.scale);
+
+    // Door start position: center of elevator door, higher up (behind door frame)
+    const doorX = W * 0.35;
+    const doorY = H * 0.45;
+
+    // Diagonal slide from door to target position
+    const drawX = doorX + (targetX - doorX) * pax.slideProgress;
+    const drawY = doorY + (targetY - doorY) * pax.slideProgress;
+
+    return { drawW, drawH: targetH, drawX, drawY, zIndex: slot.zIndex };
   }
 
   function getPassengerImage(pax) {
@@ -351,21 +373,26 @@
     if (precision >= 90) exits = 2;
     else if (precision >= 70) exits = 1;
 
-    for (let i = 0; i < exits && state.passengers.length > 0; i++) {
-      const pax = state.passengers[state.passengers.length - 1];
-      pax.exiting = true;
-      pax.slideStartTime = performance.now();
+    // Exit passengers with highest slot index first (back row leaves first)
+    const activePax = state.passengers.filter(p => !p.exiting).sort((a, b) => b.slotIndex - a.slotIndex);
+    for (let i = 0; i < exits && i < activePax.length; i++) {
+      activePax[i].exiting = true;
+      activePax[i].slideStartTime = performance.now();
     }
 
     // Board a passenger when transitioning to floor 1+
     const shouldBoard = nextFloor >= 1;
     const extraBoards = precision < 50 ? 1 : 0;
+    const activeCount = state.passengers.filter(p => !p.exiting).length;
 
-    if ((shouldBoard || extraBoards > 0) && state.passengers.filter(p => !p.exiting).length < 3) {
-      const activeCount = state.passengers.filter(p => !p.exiting).length;
-      const side = activeCount % 2 === 0 ? 'left' : 'right';
-      const newPax = createPassenger('businessman', side);
-      state.pendingPassenger = newPax;
+    if ((shouldBoard || extraBoards > 0) && activeCount < 5) {
+      // Find next available slot
+      const usedSlots = state.passengers.filter(p => !p.exiting).map(p => p.slotIndex);
+      const nextSlot = PAX_SLOTS.findIndex((_, i) => !usedSlots.includes(i));
+      if (nextSlot >= 0) {
+        const newPax = createPassenger('businessman', nextSlot);
+        state.pendingPassenger = newPax;
+      }
     }
   }
 
@@ -561,13 +588,18 @@
   }
 
   function drawPassengers(now) {
-    for (const pax of state.passengers) {
+    // Sort by zIndex: back row (0) first, then front row (1)
+    const sorted = [...state.passengers].sort((a, b) => {
+      const slotA = PAX_SLOTS[a.slotIndex] || PAX_SLOTS[0];
+      const slotB = PAX_SLOTS[b.slotIndex] || PAX_SLOTS[0];
+      return slotA.zIndex - slotB.zIndex;
+    });
+
+    for (const pax of sorted) {
       let img;
       if (pax.boarding) {
-        // Walking animation: alternate between 2 walking sprites
         const elapsed = now - pax.slideStartTime;
-        const stepDuration = 250; // ms per step
-        const stepIndex = Math.floor(elapsed / stepDuration) % 2;
+        const stepIndex = Math.floor(elapsed / 250) % 2;
         img = stepIndex === 0 ? images.paxBusinessmanWalking : images.paxBusinessmanWalking2;
       } else {
         img = getPassengerImage(pax);
