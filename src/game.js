@@ -526,7 +526,7 @@
       state.meter = Math.max(0, state.meter + CONFIG.meterComboDecay * dtSec);
     }
 
-    if (state.meter >= 1.0) { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); } stopMusic(); }
+    if (state.meter >= 1.0) { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; } stopMusic(); }
 
     // Popup expiry
     if (state.activePopup && now - state.activePopup.startTime > CONFIG.comboPopupDuration) {
@@ -597,8 +597,8 @@
 
     // 13. Game over — fume cloud fills first, then text fades in
     if (state.gameOver) {
-      // Fume cloud ON TOP of everything (visible layer)
-      drawFumeCloud(now);
+      // Fume cloud ON TOP of everything (visible layer, frame-based animation)
+      drawFumeCloud();
       drawGameOver(now);
     }
   }
@@ -652,47 +652,49 @@
   }
 
   // Growing green fume cloud on game over — starts tiny, fills the elevator over 5 seconds
-  function drawFumeCloud(now) {
-    const elapsed = now - state.gameOverTime;
-    const growDuration = 5000; // 5 seconds to fill elevator
-    const progress = Math.min(1, elapsed / growDuration);
+  // Procedural green fume — expanding radial gradient, no images
+  // Uses a persistent timer that increments each frame (bulletproof, no timestamp dependency)
+  let fumeFrame = 0;
+  const FUME_TOTAL_FRAMES = 300; // ~5 seconds at 60fps
 
-    // Eased progress for natural expansion (ease-out)
-    const eased = 1 - Math.pow(1 - progress, 2.5);
+  function drawFumeCloud() {
+    fumeFrame++;
+    const t = Math.min(1, fumeFrame / FUME_TOTAL_FRAMES);
 
     const gino = getGinoLayout();
-    // Origin point: Gino's butt area
     const originX = W * 0.45;
-    const originY = gino.drawY + gino.drawH * 0.6;
+    const originY = gino.drawY + gino.drawH * 0.55;
 
-    // Draw multiple cloud layers for a billowing effect
-    const layers = [
-      { img: images.fartCloud2, delay: 0,    maxScale: 3.0 },
-      { img: images.fartCloud3, delay: 0.15, maxScale: 2.5 },
-      { img: images.fartCloud4, delay: 0.30, maxScale: 2.2 },
-      { img: images.fartCloud3, delay: 0.45, maxScale: 2.8 },
-      { img: images.fartCloud4, delay: 0.60, maxScale: 2.0 },
-    ];
+    // Expanding radius from tiny to filling the canvas
+    const maxRadius = Math.max(W, H) * 0.9;
+    const radius = 10 + t * maxRadius;
 
+    // Radial gradient: green center fading outward
     ctx.save();
-    for (const layer of layers) {
-      const layerProgress = Math.max(0, Math.min(1, (progress - layer.delay) / (1 - layer.delay)));
-      if (layerProgress <= 0) continue;
+    const grad = ctx.createRadialGradient(originX, originY, 0, originX, originY, radius);
+    grad.addColorStop(0, `rgba(120, 160, 60, ${0.45 * t})`);
+    grad.addColorStop(0.4, `rgba(100, 150, 50, ${0.35 * t})`);
+    grad.addColorStop(0.7, `rgba(80, 130, 40, ${0.2 * t})`);
+    grad.addColorStop(1, 'rgba(60, 110, 30, 0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
 
-      const layerEased = 1 - Math.pow(1 - layerProgress, 2);
-      const scale = 0.1 + layerEased * layer.maxScale; // start at 10% of natural size
-      const drawW = layer.img.width * scale;
-      const drawH = layer.img.height * scale;
+    // Add some "cloud blobs" that drift upward for organic feel
+    ctx.save();
+    const blobCount = Math.floor(t * 8);
+    for (let i = 0; i < blobCount; i++) {
+      const seed = i * 137.5; // golden angle for distribution
+      const blobT = Math.max(0, (fumeFrame - i * 20) / FUME_TOTAL_FRAMES);
+      const blobRadius = 20 + blobT * 80;
+      const blobX = originX + Math.cos(seed) * t * W * 0.35;
+      const blobY = originY + Math.sin(seed) * t * H * 0.25 - blobT * 60;
 
-      // Spread outward from origin as they grow
-      const spreadX = (layer.delay - 0.3) * W * 0.5 * layerEased;
-      const spreadY = -layerEased * H * 0.15 * (1 + layer.delay);
-
-      const x = originX - drawW / 2 + spreadX;
-      const y = originY - drawH / 2 + spreadY;
-
-      ctx.globalAlpha = 0.35 * layerEased; // more transparent
-      ctx.drawImage(layer.img, x, y, drawW, drawH);
+      const blobGrad = ctx.createRadialGradient(blobX, blobY, 0, blobX, blobY, blobRadius);
+      blobGrad.addColorStop(0, `rgba(110, 155, 55, ${0.25 * Math.min(1, blobT * 3)})`);
+      blobGrad.addColorStop(1, 'rgba(90, 140, 40, 0)');
+      ctx.fillStyle = blobGrad;
+      ctx.fillRect(blobX - blobRadius, blobY - blobRadius, blobRadius * 2, blobRadius * 2);
     }
     ctx.restore();
   }
@@ -898,7 +900,7 @@
       meter: 0, combo: 0, bestCombo: 0, score: 0,
       perfects: 0, goods: 0, misses: 0,
       floorPerfects: 0, floorGoods: 0, floorMisses: 0,
-      bubbles: [], activePopup: null, gameOver: false, gameOverTime: 0,
+      bubbles: [], activePopup: null, gameOver: false, gameOverTime: 0, fumeFrame: 0,
       currentFloor: 0, floorPhase: 'riding',
       rhythmPaused: true, beatCount: 0, passengers: [],
       countdownPhase: true, countdownStartTime: performance.now(),
