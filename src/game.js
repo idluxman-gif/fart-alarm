@@ -63,6 +63,36 @@
     src.start(0);
   }
 
+  // Elevator ding — synthesized two-tone chime
+  function playDing() {
+    if (!audioCtx) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const now = audioCtx.currentTime;
+
+    // First tone (higher)
+    const osc1 = audioCtx.createOscillator();
+    const gain1 = audioCtx.createGain();
+    osc1.type = 'sine';
+    osc1.frequency.value = 830; // A5-ish
+    gain1.gain.setValueAtTime(0.3, now);
+    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
+    osc1.connect(gain1).connect(audioCtx.destination);
+    osc1.start(now);
+    osc1.stop(now + 0.6);
+
+    // Second tone (lower, slightly delayed)
+    const osc2 = audioCtx.createOscillator();
+    const gain2 = audioCtx.createGain();
+    osc2.type = 'sine';
+    osc2.frequency.value = 660; // E5-ish
+    gain2.gain.setValueAtTime(0, now);
+    gain2.gain.setValueAtTime(0.25, now + 0.15);
+    gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.8);
+    osc2.connect(gain2).connect(audioCtx.destination);
+    osc2.start(now + 0.15);
+    osc2.stop(now + 0.8);
+  }
+
   function startMusic() {
     if (!musicLoaded || !audioCtx) return;
     const doStart = () => {
@@ -92,7 +122,7 @@
     bpm: 85,
     get beatInterval() { return 60000 / this.bpm; },
     bubbleTravelTime: 1800,
-    beatOffsetMs: 300,           // shift bubbles 300ms later to land on beat
+    beatOffsetMs: 250,           // shift bubbles to land on beat
     tapZoneY: H * 0.65,
     bubbleSpawnY: -60,
     bubbleSize: 70,
@@ -165,6 +195,7 @@
     fartCloud4: 'Assets/characters/f4.png',
     // Floor LED images
     floorEmpty: 'Assets/Backgrounds/floor-empty.png',
+    floor0: 'Assets/Backgrounds/floor0.png',
     floor1: 'Assets/Backgrounds/floor1.png',
     floor2: 'Assets/Backgrounds/floor2.png',
     floor3: 'Assets/Backgrounds/floor3.png',
@@ -266,12 +297,17 @@
     const img = getPassengerImage(pax);
     const slot = PAX_SLOTS[pax.slotIndex] || PAX_SLOTS[0];
     const targetH = CONFIG.passengerHeight * slot.scale;
-    const scale = targetH / img.height;
+    const maxW = W * 0.28; // cap width so wide sprites (gameover) don't overflow
+    let scale = targetH / img.height;
+    const drawWRaw = img.width * scale;
+    if (drawWRaw > maxW) scale = maxW / img.width; // constrain by width instead
     const drawW = img.width * scale;
+
+    const drawH = img.height * scale;
 
     // Target position from slot
     const targetX = slot.x * W;
-    const targetY = H - targetH - (50 * slot.scale);
+    const targetY = H - drawH - (50 * slot.scale);
 
     // Door start position: center of elevator door, higher up (behind door frame)
     const doorX = W * 0.35;
@@ -281,7 +317,7 @@
     const drawX = doorX + (targetX - doorX) * pax.slideProgress;
     const drawY = doorY + (targetY - doorY) * pax.slideProgress;
 
-    return { drawW, drawH: targetH, drawX, drawY, zIndex: slot.zIndex };
+    return { drawW, drawH, drawX, drawY, zIndex: slot.zIndex };
   }
 
   function getPassengerImage(pax) {
@@ -541,6 +577,7 @@
       state.rhythmPaused = true;
       state.bubbles = [];
       state.beatCount = 0;
+      playDing();
       // Music keeps playing (FIX #4)
     }
   }
@@ -770,7 +807,7 @@
   function drawFloorLED() {
     // Draw the floor LED image on top of the background's static LED panel
     const floorNum = state.currentFloor;
-    const ledKey = floorNum >= 1 && floorNum <= 9 ? `floor${floorNum}` : 'floorEmpty';
+    const ledKey = floorNum >= 0 && floorNum <= 9 ? `floor${floorNum}` : 'floorEmpty';
     const ledImg = images[ledKey] || images.floorEmpty;
 
     // Position: centered horizontally, aligned with the LED panel in the background
