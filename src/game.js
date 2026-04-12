@@ -155,7 +155,7 @@
     // Gino fart reactions (meter thresholds)
     ginoFart1: 'Assets/characters/gino-fart1.png',
     ginoFart2: 'Assets/characters/gino-fart2.png',
-    ginoFart3: 'Assets/characters/gino-fart3.png',
+    ginoFart3: 'Assets/characters/gino-fart3-2.png',
     ginoFart4: 'Assets/characters/gino-fart4.png',
     // Fart fume clouds
     fartCloudSmall: 'Assets/characters/f1-small.png',
@@ -560,10 +560,13 @@
     // 2. Floor LED image overlay (replaces dynamic text)
     drawFloorLED();
 
-    // 3. Passengers (walking sprites during boarding)
+    // 3. Game over fume cloud (BEHIND passengers and Gino)
+    if (state.gameOver) drawFumeCloud(now);
+
+    // 4. Passengers (walking sprites during boarding)
     drawPassengers(now);
 
-    // 4. Gino (meter-reactive sprite)
+    // 5. Gino (meter-reactive sprite)
     drawGino(now);
 
     // 5. Tap zone + bubbles (only during riding, not countdown)
@@ -579,9 +582,6 @@
 
     // 7. Vignette
     if (state.meter > 0.70) drawCriticalVignette();
-
-    // 7b. Game over green fume cloud (growing effect)
-    if (state.gameOver) drawFumeCloud(now);
 
     // 8. Popup
     drawPopup(now);
@@ -628,13 +628,13 @@
     }
   }
 
-  // Gino sprite based on meter level + small fart cloud at 70%
+  // Gino sprite based on meter level
   function drawGino(now) {
     let ginoImg;
     if (state.gameOver) {
       ginoImg = images.ginoFart4;
     } else if (state.meter >= 0.70) {
-      ginoImg = images.ginoFart3;
+      ginoImg = images.ginoFart3; // has small fart cloud baked into sprite
     } else if (state.meter >= 0.50) {
       ginoImg = images.ginoFart2;
     } else if (state.meter >= 0.30) {
@@ -644,54 +644,55 @@
     }
 
     const gino = getGinoLayout();
-    // Use the selected sprite, scaled to same layout box
     const scale = gino.drawH / ginoImg.height;
     const drawW = ginoImg.width * scale;
     const drawX = (W - drawW) / 2;
     ctx.drawImage(ginoImg, drawX, gino.drawY, drawW, gino.drawH);
-
-    // Small fart cloud behind Gino's butt at 70%+ meter (not game over)
-    if (state.meter >= 0.70 && !state.gameOver) {
-      const cloudImg = images.fartCloudSmall;
-      const cloudScale = 2.5; // scale up the tiny 86x65 image
-      const cloudW = cloudImg.width * cloudScale;
-      const cloudH = cloudImg.height * cloudScale;
-      // Position behind Gino's butt (slightly left and at hip height)
-      const cloudX = drawX - cloudW * 0.3;
-      const cloudY = gino.drawY + gino.drawH * 0.55;
-      ctx.save();
-      ctx.globalAlpha = 0.7;
-      ctx.drawImage(cloudImg, cloudX, cloudY, cloudW, cloudH);
-      ctx.restore();
-    }
   }
 
-  // Growing green fume cloud on game over — fills the elevator
+  // Growing green fume cloud on game over — starts tiny, fills the elevator over 5 seconds
   function drawFumeCloud(now) {
     const elapsed = now - state.gameOverTime;
-    const growDuration = 2500; // ms to reach full size
+    const growDuration = 5000; // 5 seconds to fill elevator
     const progress = Math.min(1, elapsed / growDuration);
 
-    // Use progressively larger cloud images
-    let cloudImg;
-    if (progress < 0.3) cloudImg = images.fartCloud2;
-    else if (progress < 0.6) cloudImg = images.fartCloud3;
-    else cloudImg = images.fartCloud4;
+    // Eased progress for natural expansion (ease-out)
+    const eased = 1 - Math.pow(1 - progress, 2.5);
 
-    // Scale from small to filling most of the elevator
-    const maxW = W * 0.85;
-    const maxH = H * 0.50;
-    const drawW = maxW * progress;
-    const drawH = maxH * progress;
-
-    // Center in elevator, slightly below center (where the fart originates)
     const gino = getGinoLayout();
-    const centerX = W / 2 - drawW / 2;
-    const centerY = gino.drawY + gino.drawH * 0.3 - drawH / 2;
+    // Origin point: Gino's butt area
+    const originX = W * 0.45;
+    const originY = gino.drawY + gino.drawH * 0.6;
+
+    // Draw multiple cloud layers for a billowing effect
+    const layers = [
+      { img: images.fartCloud2, delay: 0,    maxScale: 3.0 },
+      { img: images.fartCloud3, delay: 0.15, maxScale: 2.5 },
+      { img: images.fartCloud4, delay: 0.30, maxScale: 2.2 },
+      { img: images.fartCloud3, delay: 0.45, maxScale: 2.8 },
+      { img: images.fartCloud4, delay: 0.60, maxScale: 2.0 },
+    ];
 
     ctx.save();
-    ctx.globalAlpha = 0.7 * progress;
-    ctx.drawImage(cloudImg, centerX, centerY, drawW, drawH);
+    for (const layer of layers) {
+      const layerProgress = Math.max(0, Math.min(1, (progress - layer.delay) / (1 - layer.delay)));
+      if (layerProgress <= 0) continue;
+
+      const layerEased = 1 - Math.pow(1 - layerProgress, 2);
+      const scale = 0.1 + layerEased * layer.maxScale; // start at 10% of natural size
+      const drawW = layer.img.width * scale;
+      const drawH = layer.img.height * scale;
+
+      // Spread outward from origin as they grow
+      const spreadX = (layer.delay - 0.3) * W * 0.5 * layerEased;
+      const spreadY = -layerEased * H * 0.15 * (1 + layer.delay);
+
+      const x = originX - drawW / 2 + spreadX;
+      const y = originY - drawH / 2 + spreadY;
+
+      ctx.globalAlpha = 0.35 * layerEased; // more transparent
+      ctx.drawImage(layer.img, x, y, drawW, drawH);
+    }
     ctx.restore();
   }
 
