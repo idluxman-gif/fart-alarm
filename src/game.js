@@ -151,6 +151,17 @@
     paxBusinessmanReacting: 'Assets/characters/pax-businessman-reacting.png',
     paxBusinessmanWalking: 'Assets/characters/pax-businessman-walking.png',
     paxBusinessmanWalking2: 'Assets/characters/pax-businessman-walking2.png',
+    paxBusinessmanGameover: 'Assets/characters/pax-businessman-gameover.png',
+    // Gino fart reactions (meter thresholds)
+    ginoFart1: 'Assets/characters/gino-fart1.png',
+    ginoFart2: 'Assets/characters/gino-fart2.png',
+    ginoFart3: 'Assets/characters/gino-fart3.png',
+    ginoFart4: 'Assets/characters/gino-fart4.png',
+    // Fart fume clouds
+    fartCloudSmall: 'Assets/characters/f1-small.png',
+    fartCloud2: 'Assets/characters/f2.png',
+    fartCloud3: 'Assets/characters/f3.png',
+    fartCloud4: 'Assets/characters/f4.png',
     // Floor LED images
     floorEmpty: 'Assets/Backgrounds/floor-empty.png',
     floor1: 'Assets/Backgrounds/floor1.png',
@@ -211,6 +222,7 @@
     fartsFiredThisFloor: new Set(),
 
     gameOver: false,
+    gameOverTime: 0,           // timestamp when game over started (for fume animation)
   };
 
   // ─── Passenger ──────────────────────────────────────────────────
@@ -272,6 +284,7 @@
   }
 
   function getPassengerImage(pax) {
+    if (state.gameOver) return images.paxBusinessmanGameover;
     if (pax.state === 'reacting') return images.paxBusinessmanReacting;
     if (pax.state === 'suspicious') return images.paxBusinessmanSuspicious;
     return images.paxBusinessmanIdle;
@@ -513,7 +526,7 @@
       state.meter = Math.max(0, state.meter + CONFIG.meterComboDecay * dtSec);
     }
 
-    if (state.meter >= 1.0) { state.meter = 1.0; state.gameOver = true; stopMusic(); }
+    if (state.meter >= 1.0) { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); } stopMusic(); }
 
     // Popup expiry
     if (state.activePopup && now - state.activePopup.startTime > CONFIG.comboPopupDuration) {
@@ -550,9 +563,8 @@
     // 3. Passengers (walking sprites during boarding)
     drawPassengers(now);
 
-    // 4. Gino
-    const gino = getGinoLayout();
-    ctx.drawImage(images.ginoIdle, gino.drawX, gino.drawY, gino.drawW, gino.drawH);
+    // 4. Gino (meter-reactive sprite)
+    drawGino(now);
 
     // 5. Tap zone + bubbles (only during riding, not countdown)
     if (state.floorPhase === 'riding' && !state.countdownPhase) {
@@ -567,6 +579,9 @@
 
     // 7. Vignette
     if (state.meter > 0.70) drawCriticalVignette();
+
+    // 7b. Game over green fume cloud (growing effect)
+    if (state.gameOver) drawFumeCloud(now);
 
     // 8. Popup
     drawPopup(now);
@@ -611,6 +626,73 @@
       ctx.drawImage(img, layout.drawX, layout.drawY, layout.drawW, layout.drawH);
       ctx.restore();
     }
+  }
+
+  // Gino sprite based on meter level + small fart cloud at 70%
+  function drawGino(now) {
+    let ginoImg;
+    if (state.gameOver) {
+      ginoImg = images.ginoFart4;
+    } else if (state.meter >= 0.70) {
+      ginoImg = images.ginoFart3;
+    } else if (state.meter >= 0.50) {
+      ginoImg = images.ginoFart2;
+    } else if (state.meter >= 0.30) {
+      ginoImg = images.ginoFart1;
+    } else {
+      ginoImg = images.ginoIdle;
+    }
+
+    const gino = getGinoLayout();
+    // Use the selected sprite, scaled to same layout box
+    const scale = gino.drawH / ginoImg.height;
+    const drawW = ginoImg.width * scale;
+    const drawX = (W - drawW) / 2;
+    ctx.drawImage(ginoImg, drawX, gino.drawY, drawW, gino.drawH);
+
+    // Small fart cloud behind Gino's butt at 70%+ meter (not game over)
+    if (state.meter >= 0.70 && !state.gameOver) {
+      const cloudImg = images.fartCloudSmall;
+      const cloudScale = 2.5; // scale up the tiny 86x65 image
+      const cloudW = cloudImg.width * cloudScale;
+      const cloudH = cloudImg.height * cloudScale;
+      // Position behind Gino's butt (slightly left and at hip height)
+      const cloudX = drawX - cloudW * 0.3;
+      const cloudY = gino.drawY + gino.drawH * 0.55;
+      ctx.save();
+      ctx.globalAlpha = 0.7;
+      ctx.drawImage(cloudImg, cloudX, cloudY, cloudW, cloudH);
+      ctx.restore();
+    }
+  }
+
+  // Growing green fume cloud on game over — fills the elevator
+  function drawFumeCloud(now) {
+    const elapsed = now - state.gameOverTime;
+    const growDuration = 2500; // ms to reach full size
+    const progress = Math.min(1, elapsed / growDuration);
+
+    // Use progressively larger cloud images
+    let cloudImg;
+    if (progress < 0.3) cloudImg = images.fartCloud2;
+    else if (progress < 0.6) cloudImg = images.fartCloud3;
+    else cloudImg = images.fartCloud4;
+
+    // Scale from small to filling most of the elevator
+    const maxW = W * 0.85;
+    const maxH = H * 0.50;
+    const drawW = maxW * progress;
+    const drawH = maxH * progress;
+
+    // Center in elevator, slightly below center (where the fart originates)
+    const gino = getGinoLayout();
+    const centerX = W / 2 - drawW / 2;
+    const centerY = gino.drawY + gino.drawH * 0.3 - drawH / 2;
+
+    ctx.save();
+    ctx.globalAlpha = 0.7 * progress;
+    ctx.drawImage(cloudImg, centerX, centerY, drawW, drawH);
+    ctx.restore();
   }
 
   function drawTapZone() {
@@ -798,7 +880,7 @@
       meter: 0, combo: 0, bestCombo: 0, score: 0,
       perfects: 0, goods: 0, misses: 0,
       floorPerfects: 0, floorGoods: 0, floorMisses: 0,
-      bubbles: [], activePopup: null, gameOver: false,
+      bubbles: [], activePopup: null, gameOver: false, gameOverTime: 0,
       currentFloor: 0, floorPhase: 'riding',
       rhythmPaused: true, beatCount: 0, passengers: [],
       countdownPhase: true, countdownStartTime: performance.now(),
