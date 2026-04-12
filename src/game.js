@@ -560,10 +560,7 @@
     // 2. Floor LED image overlay (replaces dynamic text)
     drawFloorLED();
 
-    // 3. Game over fume cloud (BEHIND passengers and Gino)
-    if (state.gameOver) drawFumeCloud(now);
-
-    // 4. Passengers (walking sprites during boarding)
+    // 3. Passengers (walking sprites during boarding)
     drawPassengers(now);
 
     // 5. Gino (meter-reactive sprite)
@@ -598,8 +595,12 @@
     // 12. Tap to start
     if (needsUserGesture && !state.gameOver) drawTapToStart();
 
-    // 13. Game over
-    if (state.gameOver) drawGameOver();
+    // 13. Game over — fume cloud fills first, then text fades in
+    if (state.gameOver) {
+      // Fume cloud ON TOP of everything (visible layer)
+      drawFumeCloud(now);
+      drawGameOver(now);
+    }
   }
 
   function drawPassengers(now) {
@@ -844,8 +845,23 @@
     ctx.restore();
   }
 
-  function drawGameOver() {
-    ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, W, H);
+  function drawGameOver(now) {
+    const elapsed = now - state.gameOverTime;
+    const textDelay = 3000;  // wait 3 seconds for fumes to fill before showing text
+    const fadeIn = Math.max(0, Math.min(1, (elapsed - textDelay) / 1000)); // 1s fade
+
+    // Dark overlay fades in gradually alongside the fumes
+    const overlayAlpha = Math.min(0.6, elapsed / 5000 * 0.6);
+    ctx.save();
+    ctx.fillStyle = `rgba(0,0,0,${overlayAlpha})`;
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+
+    // Text only appears after the delay
+    if (fadeIn <= 0) return;
+
+    ctx.save();
+    ctx.globalAlpha = fadeIn;
     const lvlClear = state.currentFloor > CONFIG.totalFloors;
     ctx.fillStyle = lvlClear ? '#4ade80' : '#ef4444';
     ctx.font = 'bold 42px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -856,7 +872,8 @@
     ctx.fillText(`P: ${state.perfects}  G: ${state.goods}  M: ${state.misses}`, W / 2, H * 0.50);
     ctx.fillText(`Best Combo: ${state.bestCombo}`, W / 2, H * 0.55);
     ctx.fillStyle = '#aaa'; ctx.font = '16px Arial';
-    ctx.fillText('Tap to restart', W / 2, H * 0.65); ctx.restore();
+    ctx.fillText('Tap to restart', W / 2, H * 0.65);
+    ctx.restore();
   }
 
   function roundRect(ctx, x, y, w, h, r) {
