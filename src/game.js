@@ -92,7 +92,7 @@
     bpm: 85,
     get beatInterval() { return 60000 / this.bpm; },
     bubbleTravelTime: 1800,
-    beatOffsetMs: 300,           // shift bubbles 300ms later to land on beat
+    beatOffsetMs: -50,           // shift bubbles earlier to hit downbeat (the 1)
     tapZoneY: H * 0.65,
     bubbleSpawnY: -60,
     bubbleSize: 70,
@@ -120,7 +120,7 @@
     // Phases: ding (500ms) → doors open (800ms) → passenger slide (800ms) → doors close (800ms) → countdown (3 beats)
     floorDingDuration: 500,
     floorDoorsOpenDuration: 800,
-    floorPassengerSlideDuration: 800,
+    floorPassengerSlideDuration: 1200,   // ~4 walking steps at 250ms each
     floorDoorsCloseDuration: 800,
 
     passengerHeight: H * 0.28,
@@ -137,6 +137,7 @@
   // ─── Asset Manifest ─────────────────────────────────────────────
   const ASSETS = {
     elevatorBase: 'Assets/Backgrounds/elevator-interior-base3.jpg',
+    elevatorOpen: 'Assets/Backgrounds/elevator-interior-base3-open.jpg',
     ginoIdle: 'Assets/characters/gino-idle.png',
     fartMeterEmpty: 'Assets/ui/fart-meter-empty.png',
     fartMeterFillGreen: 'Assets/ui/fart-meter-fill-green.png',
@@ -148,6 +149,19 @@
     paxBusinessmanIdle: 'Assets/characters/pax-businessman-idle.png',
     paxBusinessmanSuspicious: 'Assets/characters/pax-businessman-suspicious.png',
     paxBusinessmanReacting: 'Assets/characters/pax-businessman-reacting.png',
+    paxBusinessmanWalking: 'Assets/characters/pax-businessman-walking.png',
+    paxBusinessmanWalking2: 'Assets/characters/pax-businessman-walking2.png',
+    // Floor LED images
+    floorEmpty: 'Assets/Backgrounds/floor-empty.png',
+    floor1: 'Assets/Backgrounds/floor1.png',
+    floor2: 'Assets/Backgrounds/floor2.png',
+    floor3: 'Assets/Backgrounds/floor3.png',
+    floor4: 'Assets/Backgrounds/floor4.png',
+    floor5: 'Assets/Backgrounds/floor5.png',
+    floor6: 'Assets/Backgrounds/floor6.png',
+    floor7: 'Assets/Backgrounds/floor7.png',
+    floor8: 'Assets/Backgrounds/floor8.png',
+    floor9: 'Assets/Backgrounds/floor9.png',
   };
 
   const images = {};
@@ -491,61 +505,77 @@
   }
 
   // ─── Render ─────────────────────────────────────────────────────
+  const isDoorPhase = () => ['doors-open', 'pax-slide', 'doors-close'].includes(state.floorPhase);
+
   function render(now) {
     ctx.clearRect(0, 0, W, H);
 
-    // 1. Background
-    ctx.drawImage(images.elevatorBase, 0, 0, W, H);
+    // 1. Background — swap to open-door image during door phases
+    if (isDoorPhase()) {
+      ctx.drawImage(images.elevatorOpen, 0, 0, W, H);
+    } else {
+      ctx.drawImage(images.elevatorBase, 0, 0, W, H);
+    }
 
-    // 2. Passengers
-    drawPassengers();
+    // 2. Floor LED image overlay (replaces dynamic text)
+    drawFloorLED();
 
-    // 3. Gino
+    // 3. Passengers (walking sprites during boarding)
+    drawPassengers(now);
+
+    // 4. Gino
     const gino = getGinoLayout();
     ctx.drawImage(images.ginoIdle, gino.drawX, gino.drawY, gino.drawW, gino.drawH);
 
-    // 6. Tap zone + bubbles (only during riding)
+    // 5. Tap zone + bubbles (only during riding, not countdown)
     if (state.floorPhase === 'riding' && !state.countdownPhase) {
       drawTapZone();
       drawBubbles(now);
     }
 
-    // 7. Fart meter
+    // 6. Fart meter
     const meter = getFartMeterLayout();
     ctx.drawImage(images.fartMeterEmpty, meter.drawX, meter.drawY, meter.drawW, meter.drawH);
     drawMeterFill(meter, state.meter);
 
-    // 8. Vignette
+    // 7. Vignette
     if (state.meter > 0.70) drawCriticalVignette();
 
-    // 9. Popup
+    // 8. Popup
     drawPopup(now);
 
-    // 10. HUD
+    // 9. HUD
     drawComboHUD();
-    drawFloorHUD();
 
-    // 11. Floor transition text
-    if (state.floorPhase === 'ding' || state.floorPhase === 'doors-open' || state.floorPhase === 'pax-slide' || state.floorPhase === 'doors-close') {
-      drawFloorTransitionText(now);
-    }
+    // 10. Floor transition text (ding phase only — doors use the open bg)
+    if (state.floorPhase === 'ding') drawFloorTransitionText(now);
 
-    // 12. Countdown
+    // 11. Countdown
     if (state.countdownPhase && !needsUserGesture && !state.gameOver) drawCountdown(now);
 
-    // 13. Tap to start
+    // 12. Tap to start
     if (needsUserGesture && !state.gameOver) drawTapToStart();
 
-    // 14. Game over
+    // 13. Game over
     if (state.gameOver) drawGameOver();
   }
 
-  function drawPassengers() {
+  function drawPassengers(now) {
     for (const pax of state.passengers) {
-      const img = getPassengerImage(pax);
+      let img;
+      if (pax.boarding) {
+        // Walking animation: alternate between 2 walking sprites
+        const elapsed = now - pax.slideStartTime;
+        const stepDuration = 250; // ms per step
+        const stepIndex = Math.floor(elapsed / stepDuration) % 2;
+        img = stepIndex === 0 ? images.paxBusinessmanWalking : images.paxBusinessmanWalking2;
+      } else {
+        img = getPassengerImage(pax);
+      }
+
       const layout = getPassengerLayout(pax);
       ctx.save();
-      if (pax.boarding || pax.exiting) ctx.globalAlpha = pax.slideProgress;
+      if (pax.boarding || pax.exiting) ctx.globalAlpha = Math.min(1, pax.slideProgress * 2);
       ctx.drawImage(img, layout.drawX, layout.drawY, layout.drawW, layout.drawH);
       ctx.restore();
     }
@@ -632,51 +662,33 @@
     ctx.fillText(t, 22, H * 0.12 + 6); ctx.restore();
   }
 
-  function drawFloorHUD() {
-    // Render floor number on the elevator's built-in LED display
-    // Cover the static "4" in the background, then draw dynamic floor number
-    const ledX = W * 0.32;
-    const ledY = H * 0.210;
-    const ledW = W * 0.36;
-    const ledH = H * 0.072;
+  function drawFloorLED() {
+    // Draw the floor LED image on top of the background's static LED panel
+    const floorNum = state.currentFloor;
+    const ledKey = floorNum >= 1 && floorNum <= 9 ? `floor${floorNum}` : 'floorEmpty';
+    const ledImg = images[ledKey] || images.floorEmpty;
 
-    ctx.save();
-    // Dark panel to cover background's static number
-    ctx.fillStyle = '#1a1a18';
-    ctx.fillRect(ledX, ledY, ledW, ledH);
+    // Position: centered horizontally, aligned with the LED panel in the background
+    // LED panel in bg is at roughly 21-28% from top, centered
+    const ledW = W * 0.40;
+    const ledH = ledW * (ledImg.height / ledImg.width);
+    const ledX = (W - ledW) / 2;
+    const ledY = H * 0.205;
 
-    // Dynamic floor number in amber LED style
-    ctx.fillStyle = '#e8a020';
-    ctx.font = 'bold 34px "Courier New", monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(`${state.currentFloor}`, ledX + ledW / 2, ledY + ledH / 2);
-    ctx.restore();
+    ctx.drawImage(ledImg, ledX, ledY, ledW, ledH);
   }
 
   // FIX #4: Floor transition text with precision
   function drawFloorTransitionText(now) {
+    // Brief ding overlay — just a quick flash, no heavy darkening
+    const elapsed = now - state.floorTransitionStart;
+    const alpha = Math.max(0, 1 - elapsed / CONFIG.floorDingDuration);
     ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.4)';
-    ctx.fillRect(0, 0, W, H);
-
-    const precision = getFloorPrecision();
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 32px Arial';
+    ctx.globalAlpha = alpha * 0.6;
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 36px Arial';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(`FLOOR ${state.currentFloor + 1}`, W / 2, H * 0.38);
-
-    ctx.font = '20px Arial';
-    const precColor = precision >= 70 ? '#4ade80' : precision >= 50 ? '#fbbf24' : '#ef4444';
-    ctx.fillStyle = precColor;
-    ctx.fillText(`Precision: ${precision.toFixed(0)}%`, W / 2, H * 0.44);
-
-    // Show door status
-    ctx.fillStyle = '#aaa'; ctx.font = '14px Arial';
-    if (state.floorPhase === 'ding') ctx.fillText('🔔 Ding!', W / 2, H * 0.50);
-    else if (state.floorPhase === 'doors-open') ctx.fillText('Doors opening...', W / 2, H * 0.50);
-    else if (state.floorPhase === 'pax-slide') ctx.fillText('Passenger boarding...', W / 2, H * 0.50);
-    else if (state.floorPhase === 'doors-close') ctx.fillText('Doors closing...', W / 2, H * 0.50);
-
+    ctx.fillText('🔔', W / 2, H * 0.45);
     ctx.restore();
   }
 
