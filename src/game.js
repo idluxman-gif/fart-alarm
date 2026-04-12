@@ -122,7 +122,7 @@
     bpm: 85,
     get beatInterval() { return 60000 / this.bpm; },
     bubbleTravelTime: 1800,
-    beatOffsetMs: 450,           // shift bubbles to land on beat
+    beatOffsetMs: 500,           // shift bubbles to land on beat
     tapZoneY: H * 0.65,
     bubbleSpawnY: -60,
     bubbleSize: 70,
