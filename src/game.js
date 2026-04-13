@@ -123,11 +123,13 @@
     bpm: 85,
     get beatInterval() { return 60000 / this.bpm; },
     bubbleTravelTime: 1800,
-    beatOffsetMs: -155,          // shift bubbles back 705ms from 550 to try next quarter
-    tapZoneY: H * 0.65,
-    bubbleSpawnY: -60,
-    bubbleSize: 70,
-    tapZoneSize: 90,
+    beatOffsetMs: -155,
+    // Horizontal bubble track at the bottom of the screen
+    bubbleTrackY: H * 0.92,     // Y position of the horizontal track
+    tapZoneX: W * 0.5,          // tap zone at center horizontally
+    bubbleSpawnX: -50,           // spawn off left edge
+    bubbleSize: 50,              // smaller bubbles for horizontal track
+    tapZoneSize: 65,
     countdownBeats: 3,
 
     perfectWindow: 30,
@@ -179,6 +181,7 @@
     fartMeterEmpty: 'Assets/ui/fart-meter-empty.png',
     fartMeterFillGreen: 'Assets/ui/fart-meter-fill-green.png',
     tapGhostBubble: 'Assets/ui/tap-ghost-bubble.png',
+    tapGhostBubbleMiss: 'Assets/ui/tap-ghost-bubble-miss.png',
     tapZoneRing: 'Assets/ui/tap-zone-ring.png',
     comboPopupPerfect: 'Assets/ui/combo-popup-perfect.png',
     comboPopupGood: 'Assets/ui/combo-popup-good.png',
@@ -412,9 +415,9 @@
     state.bubbles.push({ spawnTime: adjusted - CONFIG.bubbleTravelTime, hitTime: adjusted, hit: false, missed: false });
   }
 
-  function getBubbleY(bubble, now) {
+  function getBubbleX(bubble, now) {
     const progress = (now - bubble.spawnTime) / CONFIG.bubbleTravelTime;
-    return CONFIG.bubbleSpawnY + (CONFIG.tapZoneY - CONFIG.bubbleSpawnY) * progress;
+    return CONFIG.bubbleSpawnX + (CONFIG.tapZoneX - CONFIG.bubbleSpawnX) * progress;
   }
 
   // ─── Tap Handling ───────────────────────────────────────────────
@@ -677,7 +680,13 @@
     }
 
     // Cleanup
-    state.bubbles = state.bubbles.filter(b => !b.hit && !b.missed && getBubbleY(b, now) < H + 100);
+    // Keep missed bubbles alive (they keep scrolling right as miss indicators)
+    // Remove hit bubbles and bubbles that have scrolled off the right edge
+    state.bubbles = state.bubbles.filter(b => {
+      if (b.hit) return false;
+      const x = getBubbleX(b, now);
+      return x < W + 100; // remove when off right edge
+    });
 
     // Passive meter from passengers only
     const paxCount = state.passengers.filter(p => !p.exiting).length;
@@ -975,7 +984,23 @@
 
   function drawTapZone() {
     const size = CONFIG.tapZoneSize;
-    const x = W / 2 - size / 2, y = CONFIG.tapZoneY - size / 2;
+    const trackY = CONFIG.bubbleTrackY;
+
+    // Subtle track line
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 8]);
+    ctx.beginPath();
+    ctx.moveTo(0, trackY);
+    ctx.lineTo(W, trackY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // Tap zone ring at center
+    const x = CONFIG.tapZoneX - size / 2;
+    const y = trackY - size / 2;
     ctx.save(); ctx.globalAlpha = 0.3;
     ctx.drawImage(images.tapZoneRing, x - 4, y - 4, size + 8, size + 8);
     ctx.restore();
@@ -983,14 +1008,30 @@
   }
 
   function drawBubbles(now) {
+    const size = CONFIG.bubbleSize;
+    const trackY = CONFIG.bubbleTrackY;
+
     for (const b of state.bubbles) {
-      if (b.hit || b.missed) continue;
-      const y = getBubbleY(b, now);
-      const size = CONFIG.bubbleSize, x = W / 2 - size / 2;
-      const fadeIn = Math.min(1, (y - CONFIG.bubbleSpawnY) / 80);
-      ctx.save(); ctx.globalAlpha = fadeIn * 0.85;
-      ctx.drawImage(images.tapGhostBubble, x, y - size / 2, size, size);
-      ctx.restore();
+      if (b.hit) continue; // hit bubbles removed from array, but double-check
+
+      const x = getBubbleX(b, now);
+
+      if (b.missed) {
+        // Missed: show pink bubble, keep scrolling right, fade out
+        const pastMissX = x - CONFIG.tapZoneX;
+        const fadeOut = Math.max(0, 1 - pastMissX / (W * 0.5));
+        ctx.save();
+        ctx.globalAlpha = fadeOut * 0.8;
+        ctx.drawImage(images.tapGhostBubbleMiss, x - size / 2, trackY - size / 2, size, size);
+        ctx.restore();
+      } else {
+        // Normal: blue bubble approaching tap zone
+        const fadeIn = Math.min(1, (x - CONFIG.bubbleSpawnX) / 80);
+        ctx.save();
+        ctx.globalAlpha = fadeIn * 0.85;
+        ctx.drawImage(images.tapGhostBubble, x - size / 2, trackY - size / 2, size, size);
+        ctx.restore();
+      }
     }
   }
 
@@ -1039,7 +1080,7 @@
     const baseW = 160, baseH = baseW * (img.height / img.width);
     const s = 0.6 + scaleP * 0.4;
     ctx.save(); ctx.globalAlpha = fadeP;
-    ctx.drawImage(img, W / 2 - baseW * s / 2, CONFIG.tapZoneY - 120 - baseH * s / 2, baseW * s, baseH * s);
+    ctx.drawImage(img, W / 2 - baseW * s / 2, CONFIG.bubbleTrackY - 100 - baseH * s / 2, baseW * s, baseH * s);
     ctx.restore();
   }
 
