@@ -1147,8 +1147,18 @@
       state.countdownPhase = false;
       state.rhythmPaused = false;
       state.floorPhase = 'riding';
-      // Snap to the continuous music beat grid — keeps sync across floors
-      state.nextBeatTime = getNextBeatOnGrid(now);
+      // Set nextBeatTime far enough in the future that the first bubble
+      // starts fully off-screen and the player sees it approach
+      const gridBeat = getNextBeatOnGrid(now);
+      // Ensure at least bubbleTravelTime before first hit
+      const minFirstHit = now + CONFIG.bubbleTravelTime;
+      if (gridBeat < minFirstHit) {
+        // Skip ahead to the next beat that gives enough travel time
+        const beatsToSkip = Math.ceil((minFirstHit - gridBeat) / CONFIG.beatInterval);
+        state.nextBeatTime = gridBeat + beatsToSkip * CONFIG.beatInterval;
+      } else {
+        state.nextBeatTime = gridBeat;
+      }
       return;
     }
 
