@@ -155,6 +155,12 @@
 
     passengerHeight: H * 0.32,    // same height as Gino
 
+    // Boss floor
+    bossFloor: 15,               // boss triggers at this floor
+    bossDurationBeats: 128,      // 90 seconds at 85 BPM ≈ 128 beats
+    bossMissPenalty: 0.20,       // +20% per miss during boss
+    preBossCutsceneDuration: 5000, // 5 seconds for cutscene
+
     // FIX #6: Fart sound thresholds (segment-based)
     fartThresholds: [
       { level: 0.30, sfx: 'fart-sm' },
@@ -209,6 +215,9 @@
     paxLawyerReacting: 'Assets/characters/pax-lawyer-reacting.png',
     paxLawyerGameover: 'Assets/characters/pax-lawyer-gameover.png',
     // Gino fart reactions (meter thresholds)
+    ginoVictorious: 'Assets/characters/gino-victorious.png',
+    ginoRelieved: 'Assets/characters/gino-relieved.png',
+    ginoBossStaredown: 'Assets/characters/gino-boss-staredown.png',
     ginoFart1: 'Assets/characters/gino-fart1.png',
     ginoFart2: 'Assets/characters/gino-fart2.png',
     ginoFart3: 'Assets/characters/gino-fart3-2.png',
@@ -280,7 +289,15 @@
     fartsFiredThisFloor: new Set(),
 
     gameOver: false,
-    gameOverTime: 0,           // timestamp when game over started (for fume animation)
+    gameOverTime: 0,
+
+    // Boss floor
+    isBossFloor: false,
+    preBossCutscene: false,     // true during the pre-boss cutscene
+    preBossCutsceneStart: 0,
+    bossDefeated: false,        // true when boss floor survived
+    victoryScreen: false,
+    victoryTime: 0,
   };
 
   // ─── Passenger ──────────────────────────────────────────────────
@@ -381,6 +398,7 @@
 
   // ─── Tap Handling ───────────────────────────────────────────────
   function handleTap() {
+    if (state.victoryScreen) { restartGame(); startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
     if (state.gameOver) { restartGame(); startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
     if (needsUserGesture) { startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
     if (state.rhythmPaused || state.countdownPhase) return;
@@ -519,7 +537,7 @@
     updatePassengers(now);
 
     // ── Floor transition state machine ──
-    if (state.floorPhase !== 'riding' && state.floorPhase !== 'countdown') {
+    if (state.floorPhase !== 'riding' && state.floorPhase !== 'countdown' && state.floorPhase !== 'pre-boss') {
       const elapsed = now - state.floorTransitionStart;
 
       if (state.floorPhase === 'ding') {
@@ -549,7 +567,6 @@
         }
       } else if (state.floorPhase === 'doors-close') {
         if (elapsed >= CONFIG.floorDoorsCloseDuration) {
-          // Advance floor, start countdown
           state.currentFloor++;
           state.floorPerfects = 0; state.floorGoods = 0; state.floorMisses = 0;
           state.fartsFiredThisFloor = new Set();
@@ -558,10 +575,52 @@
             state.gameOver = true; stopMusic(); return;
           }
 
-          state.floorPhase = 'countdown';
-          state.countdownPhase = true;
-          state.countdownStartTime = now;
+          // Check if boss floor should trigger (elevator empty + at boss floor)
+          const activePaxCount = state.passengers.filter(p => !p.exiting).length;
+          if (state.currentFloor >= CONFIG.bossFloor && activePaxCount === 0 && !state.bossDefeated) {
+            // Trigger pre-boss cutscene
+            state.preBossCutscene = true;
+            state.preBossCutsceneStart = now;
+            state.floorPhase = 'pre-boss';
+            state.rhythmPaused = true;
+            playSfx('fart-lg'); // fart release during cutscene
+          } else {
+            state.floorPhase = 'countdown';
+            state.countdownPhase = true;
+            state.countdownStartTime = now;
+          }
         }
+      }
+      return;
+    }
+
+    // ── Pre-boss cutscene ──
+    if (state.floorPhase === 'pre-boss') {
+      const elapsed = now - state.preBossCutsceneStart;
+      // Gas cloud grows during cutscene (reuse fumeFrame)
+      if (elapsed < 3000) {
+        fumeFrame = Math.min(fumeFrame + 1, 180); // grow cloud for 3 seconds
+      }
+      if (elapsed >= CONFIG.preBossCutsceneDuration) {
+        // Cutscene done — start boss floor
+        state.preBossCutscene = false;
+        state.isBossFloor = true;
+        state.meter = 0; // reset meter for boss
+        fumeFrame = 0;
+        state.fartsFiredThisFloor = new Set();
+        state.beatCount = 0;
+
+        // Board the CEO (using businessman sprites for now)
+        const ceo = createPassenger('businessman', 0);
+        ceo.boarding = true;
+        ceo.slideStartTime = now;
+        state.passengers.push(ceo);
+        state.pendingPassenger = null;
+
+        // Start countdown for boss
+        state.floorPhase = 'countdown';
+        state.countdownPhase = true;
+        state.countdownStartTime = now;
       }
       return;
     }
@@ -581,7 +640,16 @@
       if (!b.hit && !b.missed && now - b.hitTime > CONFIG.goodWindow) {
         b.missed = true;
         state.beatCount++;
-        registerResult('miss');
+        // Boss floor: +20% miss penalty instead of normal
+        if (state.isBossFloor) {
+          state.meter = Math.min(1, roundToSegment(state.meter + CONFIG.bossMissPenalty));
+          state.combo = 0; state.misses++; state.floorMisses++;
+          showPopup('miss', now);
+          checkFartThresholds();
+          if (state.meter >= 1.0) { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; } stopMusic(); }
+        } else {
+          registerResult('miss');
+        }
       }
     }
 
@@ -611,15 +679,27 @@
       state.activePopup = null;
     }
 
-    // Floor done?
-    if (state.beatCount >= CONFIG.beatsPerFloor) {
-      state.floorPhase = 'ding';
-      state.floorTransitionStart = now;
-      state.rhythmPaused = true;
-      state.bubbles = [];
-      state.beatCount = 0;
-      playDing();
-      // Music keeps playing (FIX #4)
+    // Floor done? (boss floor has different beat count)
+    const floorBeats = state.isBossFloor ? CONFIG.bossDurationBeats : CONFIG.beatsPerFloor;
+    if (state.beatCount >= floorBeats) {
+      if (state.isBossFloor) {
+        // Boss survived! Victory!
+        state.bossDefeated = true;
+        state.isBossFloor = false;
+        state.victoryScreen = true;
+        state.victoryTime = now;
+        state.rhythmPaused = true;
+        state.bubbles = [];
+        stopMusic();
+        playDing(); // victory ding
+      } else {
+        state.floorPhase = 'ding';
+        state.floorTransitionStart = now;
+        state.rhythmPaused = true;
+        state.bubbles = [];
+        state.beatCount = 0;
+        playDing();
+      }
     }
   }
 
@@ -639,8 +719,8 @@
     // 2. Floor LED image overlay (replaces dynamic text)
     drawFloorLED();
 
-    // 3. Gas cloud BEHIND passengers and Gino (grows during game over)
-    if (state.gameOver) drawFumeCloud();
+    // 3. Gas cloud BEHIND passengers and Gino (grows during game over, not victory)
+    if (state.gameOver && !state.victoryScreen) drawFumeCloud();
 
     // 4. Passengers (walking sprites during boarding)
     drawPassengers(now);
@@ -649,9 +729,10 @@
     drawGino(now);
 
     // 5. Tap zone + bubbles (only during riding, not countdown)
-    if (state.floorPhase === 'riding' && !state.countdownPhase) {
+    if (state.floorPhase === 'riding' && !state.countdownPhase && !state.victoryScreen) {
       drawTapZone();
-      drawBubbles(now);
+      // Boss floor: bubbles are INVISIBLE (audio beat only)
+      if (!state.isBossFloor) drawBubbles(now);
     }
 
     // 6. Fart meter
@@ -677,8 +758,17 @@
     // 12. Tap to start
     if (needsUserGesture && !state.gameOver) drawTapToStart();
 
-    // 13. Game over text (fume cloud already drawn behind Gino at step 3)
-    if (state.gameOver) drawGameOver(now);
+    // 13. Pre-boss cutscene overlay
+    if (state.preBossCutscene) drawPreBossCutscene(now);
+
+    // 14. Victory screen
+    if (state.victoryScreen) drawVictoryScreen(now);
+
+    // 15. Game over text (fume cloud already drawn behind Gino at step 3)
+    if (state.gameOver && !state.victoryScreen) drawGameOver(now);
+
+    // 16. Boss floor indicator
+    if (state.isBossFloor && state.floorPhase === 'riding' && !state.countdownPhase) drawBossHUD();
   }
 
   function drawPassengers(now) {
@@ -711,13 +801,19 @@
     }
   }
 
-  // Gino sprite based on meter level
+  // Gino sprite based on game state
   function drawGino(now) {
     let ginoImg;
-    if (state.gameOver) {
+    if (state.victoryScreen) {
+      ginoImg = images.ginoVictorious;
+    } else if (state.preBossCutscene) {
+      ginoImg = images.ginoRelieved;
+    } else if (state.isBossFloor) {
+      ginoImg = images.ginoBossStaredown;
+    } else if (state.gameOver) {
       ginoImg = images.ginoFart4;
     } else if (state.meter >= 0.70) {
-      ginoImg = images.ginoFart3; // has small fart cloud baked into sprite
+      ginoImg = images.ginoFart3;
     } else if (state.meter >= 0.50) {
       ginoImg = images.ginoFart2;
     } else if (state.meter >= 0.30) {
@@ -765,6 +861,89 @@
     ctx.save();
     ctx.globalAlpha = 0.75;
     ctx.drawImage(gasImg, drawX, drawY, drawW, drawH);
+    ctx.restore();
+  }
+
+  // Pre-boss cutscene: Gino checks around, relieved sigh, gas cloud, meter reset
+  function drawPreBossCutscene(now) {
+    const elapsed = now - state.preBossCutsceneStart;
+    const progress = elapsed / CONFIG.preBossCutsceneDuration;
+
+    // Dark overlay fades in
+    ctx.save();
+    ctx.fillStyle = `rgba(0,0,0,${Math.min(0.5, progress * 0.8)})`;
+    ctx.fillRect(0, 0, W, H);
+
+    // Gas cloud growing behind Gino during cutscene
+    if (elapsed > 1000 && elapsed < 4000) {
+      const gasT = (elapsed - 1000) / 2000;
+      const gasImg = images.gasCloud;
+      const gino = getGinoLayout();
+      const gasW = W * 0.5 * gasT;
+      const gasH = H * 0.3 * gasT;
+      ctx.globalAlpha = 0.5 * gasT;
+      ctx.drawImage(gasImg, gino.drawX - gasW * 0.2, gino.drawY + gino.drawH * 0.3 - gasH * 0.3, gasW, gasH);
+    }
+
+    // Text sequence
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    if (progress < 0.3) {
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 24px Arial';
+      ctx.fillText('Elevator empty...', W / 2, H * 0.25);
+    } else if (progress < 0.6) {
+      ctx.fillStyle = '#4ade80'; ctx.font = 'bold 28px Arial';
+      ctx.fillText('💨 Sweet relief!', W / 2, H * 0.25);
+    } else {
+      const pulse = 0.7 + Math.sin(now / 200) * 0.3;
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = '#ef4444'; ctx.font = 'bold 32px Arial';
+      ctx.fillText('⚠️ CEO ENTERING ⚠️', W / 2, H * 0.25);
+      ctx.font = '18px Arial'; ctx.fillStyle = '#fbbf24';
+      ctx.globalAlpha = 0.8;
+      ctx.fillText('Listen to the beat — no visual cues!', W / 2, H * 0.32);
+    }
+    ctx.restore();
+  }
+
+  // Victory screen
+  function drawVictoryScreen(now) {
+    const elapsed = now - state.victoryTime;
+    const fadeIn = Math.min(1, elapsed / 1500);
+
+    ctx.save();
+    // Golden glow background
+    ctx.fillStyle = `rgba(40, 30, 0, ${fadeIn * 0.7})`;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.globalAlpha = fadeIn;
+    ctx.fillStyle = '#fbbf24'; ctx.font = 'bold 42px Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('🏆 YOU WIN! 🏆', W / 2, H * 0.20);
+
+    ctx.fillStyle = '#fff'; ctx.font = '22px Arial';
+    ctx.fillText('The CEO survived!', W / 2, H * 0.28);
+
+    ctx.fillText(`Score: ${Math.floor(state.score)}`, W / 2, H * 0.38);
+    ctx.fillText(`Perfects: ${state.perfects}  Good: ${state.goods}`, W / 2, H * 0.43);
+    ctx.fillText(`Misses: ${state.misses}`, W / 2, H * 0.48);
+    ctx.fillText(`Best Combo: ${state.bestCombo}`, W / 2, H * 0.53);
+
+    if (elapsed > 2000) {
+      ctx.fillStyle = '#aaa'; ctx.font = '16px Arial';
+      ctx.fillText('Tap to play again', W / 2, H * 0.63);
+    }
+    ctx.restore();
+  }
+
+  // Boss floor HUD indicator
+  function drawBossHUD() {
+    ctx.save();
+    const pulse = 0.6 + Math.sin(performance.now() / 300) * 0.4;
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = '#ef4444'; ctx.font = 'bold 16px Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText('🎧 BOSS — LISTEN ONLY 🎧', W / 2, 12);
     ctx.restore();
   }
 
@@ -969,15 +1148,18 @@
       meter: 0, combo: 0, bestCombo: 0, score: 0,
       perfects: 0, goods: 0, misses: 0,
       floorPerfects: 0, floorGoods: 0, floorMisses: 0,
-      bubbles: [], activePopup: null, gameOver: false, gameOverTime: 0, fumeFrame: 0,
+      bubbles: [], activePopup: null, gameOver: false, gameOverTime: 0,
       currentFloor: 0, floorPhase: 'riding',
       rhythmPaused: true, beatCount: 0, passengers: [],
+      isBossFloor: false, preBossCutscene: false, bossDefeated: false,
+      victoryScreen: false, victoryTime: 0,
       countdownPhase: true, countdownStartTime: performance.now(),
       fartsFiredThisFloor: new Set(),
       lastTime: performance.now(),
       nextBeatTime: performance.now() + CONFIG.beatInterval,
     });
     state.pendingPassenger = null;
+    fumeFrame = 0;
   }
 
   function init() {
