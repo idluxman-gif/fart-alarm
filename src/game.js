@@ -104,6 +104,7 @@
       musicSource.start(0);
       musicPlaying = true;
       needsUserGesture = false;
+      musicBeatOrigin = performance.now();
     };
     if (audioCtx.state === 'suspended') {
       audioCtx.resume().then(doStart);
@@ -257,6 +258,18 @@
     return Promise.all(Object.entries(ASSETS).map(([k, s]) => loadImage(k, s)));
   }
 
+  // ─── Beat Grid Sync ─────────────────────────────────────────────
+  // Calculate the next beat time on the continuous music grid
+  // This keeps beats in sync across floor transitions
+  let musicBeatOrigin = 0; // performance.now() when beat grid started
+
+  function getNextBeatOnGrid(now) {
+    const beatMs = CONFIG.beatInterval;
+    const elapsed = now - musicBeatOrigin;
+    const beatsSinceOrigin = Math.ceil(elapsed / beatMs);
+    return musicBeatOrigin + beatsSinceOrigin * beatMs;
+  }
+
   // ─── Game State ─────────────────────────────────────────────────
   const state = {
     running: false, lastTime: 0,
@@ -305,11 +318,12 @@
   // Front row: same size as Gino, standing beside him
   // Back row: slightly smaller + higher to create depth
   const PAX_SLOTS = [
-    { id: 'front-left',  x: 0.08, y: 0.62, scale: 1.0,  zIndex: 1 },
-    { id: 'front-right', x: 0.62, y: 0.62, scale: 1.0,  zIndex: 1 },
-    { id: 'back-left',   x: 0.06, y: 0.58, scale: 0.82, zIndex: 0 },
-    { id: 'back-right',  x: 0.68, y: 0.58, scale: 0.82, zIndex: 0 },
-    { id: 'back-center', x: 0.30, y: 0.56, scale: 0.75, zIndex: 0 },
+    { id: 'front-left',  x: 0.05, y: 0.62, scale: 1.0,  zIndex: 2 },
+    { id: 'front-right', x: 0.60, y: 0.62, scale: 1.0,  zIndex: 2 },
+    // Back row: bigger (0.90), positioned BETWEEN front chars and Gino, higher up
+    { id: 'back-left',   x: 0.20, y: 0.55, scale: 0.90, zIndex: 1 },
+    { id: 'back-right',  x: 0.50, y: 0.55, scale: 0.90, zIndex: 1 },
+    { id: 'back-center', x: 0.35, y: 0.50, scale: 0.85, zIndex: 0 },
   ];
 
   function createPassenger(type, slotIndex) {
@@ -1079,7 +1093,8 @@
       state.countdownPhase = false;
       state.rhythmPaused = false;
       state.floorPhase = 'riding';
-      state.nextBeatTime = now + CONFIG.beatInterval;
+      // Snap to the continuous music beat grid — keeps sync across floors
+      state.nextBeatTime = getNextBeatOnGrid(now);
       return;
     }
 
@@ -1160,6 +1175,7 @@
     });
     state.pendingPassenger = null;
     fumeFrame = 0;
+    musicBeatOrigin = performance.now();
   }
 
   function init() {
