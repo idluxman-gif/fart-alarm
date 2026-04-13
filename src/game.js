@@ -1,4 +1,4 @@
-// FART ALARM — game.js (Phase 3b: Full Floor Sequence + Fart SFX)
+// ELEFARTOR — game.js (Phase 3b: Full Floor Sequence + Fart SFX)
 // Canvas 390x844 | BPM rhythm | Passengers | Floor transitions with doors | Fart sounds
 
 (function () {
@@ -1552,7 +1552,7 @@
 
     Promise.all([loadAllAssets(), loadAllAudio()])
       .then(() => {
-        console.log('FART ALARM — Phase 3b ready');
+        console.log('ELEFARTOR — Phase 3b ready');
         canvas.addEventListener('mousedown', (e) => {
           e.preventDefault();
           lastTapX = e.clientX; lastTapY = e.clientY;
