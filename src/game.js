@@ -164,6 +164,15 @@
     bossMissPenalty: 0.20,       // +20% per miss during boss
     preBossCutsceneDuration: 5000, // 5 seconds for cutscene
 
+    // Interrupt events
+    eventMinFloor: 3,            // events start from floor 3
+    eventTimeout: 2000,          // 2 seconds to respond
+    eventMinBeat: 8,             // earliest beat an event can trigger
+    eventMaxBeat: 20,            // latest beat an event can trigger
+    eventPhonePenalty: 0.10,
+    eventSneezePenalty: 0.15,
+    eventJoltPenalty: 0.10,
+
     // FIX #6: Fart sound thresholds (segment-based)
     fartThresholds: [
       { level: 0.30, sfx: 'fart-sm' },
@@ -183,6 +192,9 @@
     tapGhostBubble: 'Assets/ui/tap-ghost-bubble.png',
     tapGhostBubbleMiss: 'Assets/ui/tap-ghost-bubble-miss.png',
     tapZoneRing: 'Assets/ui/tap-zone-ring.png',
+    eventPhone: 'Assets/ui/event-phone.png',
+    eventSneeze: 'Assets/ui/event-sneeze.png',
+    eventJolt: 'Assets/ui/event-jolt.png',
     comboPopupPerfect: 'Assets/ui/combo-popup-perfect.png',
     comboPopupGood: 'Assets/ui/combo-popup-good.png',
     comboPopupMiss: 'Assets/ui/combo-popup-miss.png',
@@ -265,6 +277,7 @@
   // ─── Beat Grid Sync ─────────────────────────────────────────────
   // Keep a continuous beat grid based on performance.now() origin.
   // After floor transitions, snap nextBeatTime to the nearest future beat on this grid.
+  let lastTapX = 0, lastTapY = 0; // last tap coordinates for event hit detection
   let musicBeatOrigin = 0; // performance.now() when beat grid started
 
   function getNextBeatOnGrid(now) {
@@ -301,6 +314,12 @@
     // Countdown
     countdownPhase: true,
     countdownStartTime: 0,
+
+    // Interrupt events
+    currentEvent: null,          // { type: 'phone'|'sneeze'|'jolt', startTime, x, y, targetPaxIndex, resolved, joltStep }
+    eventFiredThisFloor: false,  // max one event per floor
+    eventTriggerBeat: 0,         // pre-calculated beat when event fires
+    eventResultFlash: null,      // { success: bool, startTime }
 
     // FIX #6: Track which fart thresholds have fired this floor
     fartsFiredThisFloor: new Set(),
@@ -428,6 +447,18 @@
     if (state.rhythmPaused || state.countdownPhase) return;
 
     const now = performance.now();
+
+    // Handle interrupt event taps first (takes priority over bubbles)
+    if (state.currentEvent && !state.currentEvent.resolved) {
+      // Get tap coordinates from the last event
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = W / rect.width, scaleY = H / rect.height;
+      const tapX = (lastTapX - rect.left) * scaleX;
+      const tapY = (lastTapY - rect.top) * scaleY;
+      if (handleEventTap(tapX, tapY, now)) return;
+      return; // during events, taps only go to event handling
+    }
+
     let closest = null, closestOff = Infinity;
     for (const b of state.bubbles) {
       if (b.hit || b.missed) continue;
@@ -596,6 +627,9 @@
           state.currentFloor++;
           state.floorPerfects = 0; state.floorGoods = 0; state.floorMisses = 0;
           state.fartsFiredThisFloor = new Set();
+          state.currentEvent = null;
+          state.eventFiredThisFloor = false;
+          scheduleEventForFloor();
 
           if (state.currentFloor > CONFIG.totalFloors) {
             state.levelCleared = true; stopMusic(); return;
@@ -655,6 +689,16 @@
     if (state.countdownPhase) return;
 
     // ── Normal riding phase ──
+    // During active events, freeze bubble spawning and miss detection
+    if (state.currentEvent && !state.currentEvent.resolved) {
+      // Jolt screen shake
+      if (state.currentEvent.type === 'jolt') {
+        state.currentEvent.shakeOffset = Math.sin(now / 50) * 4;
+      }
+      // Skip bubble logic during event
+      // Still check popup expiry and floor done below
+    } else {
+
     // Spawn bubbles
     while (state.nextBeatTime <= now + CONFIG.bubbleTravelTime) {
       spawnBubble(state.nextBeatTime);
@@ -711,6 +755,28 @@
       state.activePopup = null;
     }
 
+    } // end of non-event riding phase
+
+    // ── Interrupt Event Logic ──
+    // Trigger event at the pre-calculated beat
+    if (!state.currentEvent && !state.eventFiredThisFloor
+        && state.currentFloor >= CONFIG.eventMinFloor && !state.isBossFloor
+        && state.beatCount >= state.eventTriggerBeat && state.eventTriggerBeat > 0) {
+      triggerRandomEvent(now);
+    }
+
+    // Update active event (timeout check)
+    if (state.currentEvent && !state.currentEvent.resolved) {
+      if (now - state.currentEvent.startTime > CONFIG.eventTimeout) {
+        resolveEvent(false, now); // timed out = fail
+      }
+    }
+
+    // Clear event result flash
+    if (state.eventResultFlash && now - state.eventResultFlash.startTime > 600) {
+      state.eventResultFlash = null;
+    }
+
     // Floor done? (boss floor has different beat count)
     const floorBeats = state.isBossFloor ? CONFIG.bossDurationBeats : CONFIG.beatsPerFloor;
     if (state.beatCount >= floorBeats) {
@@ -735,11 +801,118 @@
     }
   }
 
+  // ─── Interrupt Events ───────────────────────────────────────────
+  function scheduleEventForFloor() {
+    // Decide if this floor gets an event and when
+    if (state.currentFloor < CONFIG.eventMinFloor || state.isBossFloor) {
+      state.eventTriggerBeat = 0;
+      return;
+    }
+    // Random beat between eventMinBeat and eventMaxBeat
+    state.eventTriggerBeat = CONFIG.eventMinBeat +
+      Math.floor(Math.random() * (CONFIG.eventMaxBeat - CONFIG.eventMinBeat));
+    state.eventFiredThisFloor = false;
+  }
+
+  function triggerRandomEvent(now) {
+    const types = ['phone', 'sneeze', 'jolt'];
+    const type = types[Math.floor(Math.random() * types.length)];
+
+    const event = { type, startTime: now, resolved: false };
+
+    if (type === 'phone') {
+      // Random position in upper half, away from edges
+      event.x = 60 + Math.random() * (W - 160);
+      event.y = 80 + Math.random() * (H * 0.3);
+    } else if (type === 'sneeze') {
+      // Above a random passenger (or Gino if no passengers)
+      const activePax = state.passengers.filter(p => !p.exiting && !p.boarding);
+      if (activePax.length > 0) {
+        event.targetPaxIndex = Math.floor(Math.random() * activePax.length);
+        event.targetPax = activePax[event.targetPaxIndex];
+      } else {
+        event.targetPax = null; // will position above Gino
+      }
+    } else if (type === 'jolt') {
+      event.joltStep = 0; // 0 = waiting for left tap, 1 = waiting for right tap
+      event.shakeOffset = 0;
+    }
+
+    state.currentEvent = event;
+    state.eventFiredThisFloor = true;
+
+    // Freeze bubbles — they stop moving during the event
+    state.eventBubbleFreezeTime = now;
+  }
+
+  function resolveEvent(success, now) {
+    if (!state.currentEvent || state.currentEvent.resolved) return;
+    state.currentEvent.resolved = true;
+
+    if (!success) {
+      // Apply penalty
+      const penalties = { phone: CONFIG.eventPhonePenalty, sneeze: CONFIG.eventSneezePenalty, jolt: CONFIG.eventJoltPenalty };
+      const penalty = penalties[state.currentEvent.type] || 0.10;
+      state.meter = Math.min(1, roundToSegment(state.meter + penalty));
+      checkFartThresholds();
+      if (state.meter >= 1.0) { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; } stopMusic(); }
+    } else {
+      state.score += 200; // bonus for handling event
+    }
+
+    state.eventResultFlash = { success, startTime: now };
+
+    // Resume rhythm after a brief delay (300ms)
+    setTimeout(() => {
+      state.currentEvent = null;
+      // Snap back to beat grid
+      state.nextBeatTime = getNextBeatOnGrid(performance.now());
+      // Ensure first bubble has full travel time
+      const minFirstHit = performance.now() + CONFIG.bubbleTravelTime;
+      if (state.nextBeatTime < minFirstHit) {
+        const skip = Math.ceil((minFirstHit - state.nextBeatTime) / CONFIG.beatInterval);
+        state.nextBeatTime += skip * CONFIG.beatInterval;
+      }
+    }, 300);
+  }
+
+  function handleEventTap(tapX, tapY, now) {
+    if (!state.currentEvent || state.currentEvent.resolved) return false;
+    const ev = state.currentEvent;
+
+    if (ev.type === 'phone') {
+      // Tap anywhere near the phone icon
+      const dx = tapX - ev.x, dy = tapY - ev.y;
+      if (Math.abs(dx) < 80 && Math.abs(dy) < 80) {
+        resolveEvent(true, now);
+        return true;
+      }
+    } else if (ev.type === 'sneeze') {
+      // Tap on the passenger or Gino
+      resolveEvent(true, now);
+      return true;
+    } else if (ev.type === 'jolt') {
+      if (ev.joltStep === 0 && tapX < W / 2) {
+        ev.joltStep = 1; // left tap done, need right
+        return true;
+      } else if (ev.joltStep === 1 && tapX >= W / 2) {
+        resolveEvent(true, now);
+        return true;
+      }
+    }
+    return false;
+  }
+
   // ─── Render ─────────────────────────────────────────────────────
   const isDoorPhase = () => ['doors-open', 'pax-slide', 'doors-close'].includes(state.floorPhase);
 
   function render(now) {
     ctx.clearRect(0, 0, W, H);
+
+    // Apply jolt screen shake
+    const shakeX = (state.currentEvent && state.currentEvent.type === 'jolt' && !state.currentEvent.resolved)
+      ? state.currentEvent.shakeOffset || 0 : 0;
+    if (shakeX) { ctx.save(); ctx.translate(shakeX, 0); }
 
     // 1. Background — swap to open-door image during door phases
     if (isDoorPhase()) {
@@ -778,7 +951,14 @@
     // 8. Popup
     drawPopup(now);
 
-    // 9. HUD
+    // End screen shake
+    if (shakeX) ctx.restore();
+
+    // 9. Interrupt event overlay
+    if (state.currentEvent && !state.currentEvent.resolved) drawEventOverlay(now);
+    if (state.eventResultFlash) drawEventFlash(now);
+
+    // 10. HUD
     drawComboHUD();
 
     // 10. Floor transition text (ding phase only — doors use the open bg)
@@ -979,6 +1159,82 @@
     ctx.fillStyle = '#ef4444'; ctx.font = 'bold 16px Arial';
     ctx.textAlign = 'center'; ctx.textBaseline = 'top';
     ctx.fillText('🎧 BOSS — LISTEN ONLY 🎧', W / 2, 12);
+    ctx.restore();
+  }
+
+  function drawEventOverlay(now) {
+    const ev = state.currentEvent;
+    const elapsed = now - ev.startTime;
+    const pulse = 0.7 + Math.sin(now / 150) * 0.3;
+
+
+    // Dim the tap zone to show rhythm is paused
+    // (already handled by not drawing bubbles during events)
+
+    // Timer bar at top
+    const timeLeft = Math.max(0, 1 - elapsed / CONFIG.eventTimeout);
+    ctx.save();
+    ctx.fillStyle = timeLeft > 0.3 ? '#fbbf24' : '#ef4444';
+    ctx.fillRect(0, 0, W * timeLeft, 4);
+    ctx.restore();
+
+    if (ev.type === 'phone') {
+      // Phone icon bouncing at random position
+      const bounce = Math.sin(now / 100) * 5;
+      const size = 80;
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      ctx.drawImage(images.eventPhone, ev.x - size / 2, ev.y - size / 2 + bounce, size, size);
+      // "TAP!" text
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 16px Arial';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillText('📱 TAP TO SILENCE!', ev.x, ev.y + size / 2 + 8);
+      ctx.restore();
+
+    } else if (ev.type === 'sneeze') {
+      // Sneeze indicator above a passenger
+      let sx, sy;
+      if (ev.targetPax) {
+        const layout = getPassengerLayout(ev.targetPax);
+        sx = layout.drawX + layout.drawW / 2;
+        sy = layout.drawY - 30;
+      } else {
+        const gino = getGinoLayout();
+        sx = gino.drawX + gino.drawW / 2;
+        sy = gino.drawY - 30;
+      }
+      const imgW = 120, imgH = 60;
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      ctx.drawImage(images.eventSneeze, sx - imgW / 2, sy - imgH, imgW, imgH);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 14px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('TAP: "Bless you!"', sx, sy + 10);
+      ctx.restore();
+
+    } else if (ev.type === 'jolt') {
+      const imgW = 160, imgH = 50;
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      ctx.drawImage(images.eventJolt, W / 2 - imgW / 2, H * 0.4 - imgH / 2, imgW, imgH);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 16px Arial';
+      ctx.textAlign = 'center';
+      if (ev.joltStep === 0) {
+        ctx.fillText('⬅️ TAP LEFT SIDE!', W / 2, H * 0.4 + 40);
+      } else {
+        ctx.fillText('➡️ NOW TAP RIGHT!', W / 2, H * 0.4 + 40);
+      }
+      ctx.restore();
+    }
+  }
+
+  function drawEventFlash(now) {
+    const elapsed = now - state.eventResultFlash.startTime;
+    const alpha = Math.max(0, 1 - elapsed / 600);
+    ctx.save();
+    ctx.globalAlpha = alpha * 0.3;
+    ctx.fillStyle = state.eventResultFlash.success ? '#22c55e' : '#ef4444';
+    ctx.fillRect(0, 0, W, H);
     ctx.restore();
   }
 
@@ -1251,6 +1507,7 @@
       currentFloor: 0, floorPhase: 'riding',
       rhythmPaused: true, beatCount: 0, passengers: [],
       levelCleared: false,
+      currentEvent: null, eventFiredThisFloor: false, eventTriggerBeat: 0, eventResultFlash: null,
       isBossFloor: false, preBossCutscene: false, bossDefeated: false,
       victoryScreen: false, victoryTime: 0,
       countdownPhase: true, countdownStartTime: performance.now(),
@@ -1272,8 +1529,16 @@
     Promise.all([loadAllAssets(), loadAllAudio()])
       .then(() => {
         console.log('FART ALARM — Phase 3b ready');
-        canvas.addEventListener('mousedown', (e) => { e.preventDefault(); handleTap(); });
-        canvas.addEventListener('touchstart', (e) => { e.preventDefault(); handleTap(); }, { passive: false });
+        canvas.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          lastTapX = e.clientX; lastTapY = e.clientY;
+          handleTap();
+        });
+        canvas.addEventListener('touchstart', (e) => {
+          e.preventDefault();
+          if (e.touches.length > 0) { lastTapX = e.touches[0].clientX; lastTapY = e.touches[0].clientY; }
+          handleTap();
+        }, { passive: false });
         state.lastTime = performance.now();
         state.nextBeatTime = state.lastTime + CONFIG.beatInterval;
         state.running = true;
