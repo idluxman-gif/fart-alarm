@@ -176,12 +176,38 @@
     comboPopupPerfect: 'Assets/ui/combo-popup-perfect.png',
     comboPopupGood: 'Assets/ui/combo-popup-good.png',
     comboPopupMiss: 'Assets/ui/combo-popup-miss.png',
+    // Passenger sprites — 6 types × 4 states
     paxBusinessmanIdle: 'Assets/characters/pax-businessman-idle.png',
     paxBusinessmanSuspicious: 'Assets/characters/pax-businessman-suspicious.png',
     paxBusinessmanReacting: 'Assets/characters/pax-businessman-reacting.png',
+    paxBusinessmanGameover: 'Assets/characters/pax-businessman-gameover.png',
     paxBusinessmanWalking: 'Assets/characters/pax-businessman-walking.png',
     paxBusinessmanWalking2: 'Assets/characters/pax-businessman-walking2.png',
-    paxBusinessmanGameover: 'Assets/characters/pax-businessman-gameover.png',
+
+    paxInternIdle: 'Assets/characters/pax-intern-idle.png',
+    paxInternSuspicious: 'Assets/characters/pax-intern-suspicious.png',
+    paxInternReacting: 'Assets/characters/pax-intern-reacting.png',
+    paxInternGameover: 'Assets/characters/pax-intern-gameover.png',
+
+    paxPhonegazerIdle: 'Assets/characters/pax-phonegazer-idle.jpg',
+    paxPhonegazerSuspicious: 'Assets/characters/pax-phonegazer-suspicious.jpg',
+    paxPhonegazerReacting: 'Assets/characters/pax-phonegazer-reacting.png',
+    paxPhonegazerGameover: 'Assets/characters/pax-phonegazer-gameover.png',
+
+    paxCoffeewomanIdle: 'Assets/characters/pax-coffeewoman-idle.png',
+    paxCoffeewomanSuspicious: 'Assets/characters/pax-coffeewoman-suspicious.png',
+    paxCoffeewomanReacting: 'Assets/characters/pax-coffeewoman-reacting.png',
+    paxCoffeewomanGameover: 'Assets/characters/pax-coffeewoman-gameover.png',
+
+    paxSecurityguardIdle: 'Assets/characters/pax-securityguard-idle.png',
+    paxSecurityguardSuspicious: 'Assets/characters/pax-securityguard-suspicious.png',
+    paxSecurityguardReacting: 'Assets/characters/pax-securityguard-reacting.png',
+    paxSecurityguardGameover: 'Assets/characters/pax-securityguard-gameover.png',
+
+    paxLawyerIdle: 'Assets/characters/pax-lawyer-idle.png',
+    paxLawyerSuspicious: 'Assets/characters/pax-lawyer-suspicious.png',
+    paxLawyerReacting: 'Assets/characters/pax-lawyer-reacting.png',
+    paxLawyerGameover: 'Assets/characters/pax-lawyer-gameover.png',
     // Gino fart reactions (meter thresholds)
     ginoFart1: 'Assets/characters/gino-fart1.png',
     ginoFart2: 'Assets/characters/gino-fart2.png',
@@ -264,7 +290,7 @@
   const PAX_SLOTS = [
     { id: 'front-left',  x: 0.08, y: 0.62, scale: 1.0,  zIndex: 1 },
     { id: 'front-right', x: 0.62, y: 0.62, scale: 1.0,  zIndex: 1 },
-    { id: 'back-left',   x: 0.02, y: 0.58, scale: 0.82, zIndex: 0 },
+    { id: 'back-left',   x: 0.06, y: 0.58, scale: 0.82, zIndex: 0 },
     { id: 'back-right',  x: 0.68, y: 0.58, scale: 0.82, zIndex: 0 },
     { id: 'back-center', x: 0.30, y: 0.56, scale: 0.75, zIndex: 0 },
   ];
@@ -298,7 +324,8 @@
     const slot = PAX_SLOTS[pax.slotIndex] || PAX_SLOTS[0];
     let targetH = CONFIG.passengerHeight * slot.scale;
     // Gameover sprite is hunched — reduce height slightly so he doesn't look oversized
-    if (state.gameOver && drawImg === images.paxBusinessmanGameover) targetH *= 0.85;
+    // Gameover sprites may have different proportions — reduce slightly
+    if (state.gameOver) targetH *= 0.85;
     const scale = targetH / drawImg.height;
     const drawW = drawImg.width * scale;
     const drawH = targetH;
@@ -318,11 +345,27 @@
     return { drawW, drawH, drawX, drawY, zIndex: slot.zIndex };
   }
 
+  // Passenger type registry — maps type name to image keys
+  const PAX_TYPES = ['businessman', 'intern', 'phonegazer', 'coffeewoman', 'securityguard', 'lawyer'];
+
+  function getPaxImageKey(type, state) {
+    // Build key like 'paxBusinessmanIdle' from type 'businessman' and state 'idle'
+    const cap = type.charAt(0).toUpperCase() + type.slice(1);
+    const stateCap = state.charAt(0).toUpperCase() + state.slice(1);
+    return `pax${cap}${stateCap}`;
+  }
+
   function getPassengerImage(pax) {
-    if (state.gameOver) return images.paxBusinessmanGameover;
-    if (pax.state === 'reacting') return images.paxBusinessmanReacting;
-    if (pax.state === 'suspicious') return images.paxBusinessmanSuspicious;
-    return images.paxBusinessmanIdle;
+    const visualState = state.gameOver ? 'gameover'
+      : pax.state === 'reacting' ? 'reacting'
+      : pax.state === 'suspicious' ? 'suspicious'
+      : 'idle';
+    const key = getPaxImageKey(pax.type, visualState);
+    return images[key] || images.paxBusinessmanIdle;
+  }
+
+  function getRandomPaxType() {
+    return PAX_TYPES[Math.floor(Math.random() * PAX_TYPES.length)];
   }
 
   // ─── Bubbles ────────────────────────────────────────────────────
@@ -438,7 +481,7 @@
       const usedSlots = state.passengers.filter(p => !p.exiting).map(p => p.slotIndex);
       const nextSlot = PAX_SLOTS.findIndex((_, i) => !usedSlots.includes(i));
       if (nextSlot >= 0) {
-        const newPax = createPassenger('businessman', nextSlot);
+        const newPax = createPassenger(getRandomPaxType(), nextSlot);
         state.pendingPassenger = newPax;
       }
     }
@@ -649,9 +692,13 @@
     for (const pax of sorted) {
       let img;
       if (pax.boarding) {
-        const elapsed = now - pax.slideStartTime;
-        const stepIndex = Math.floor(elapsed / 250) % 2;
-        img = stepIndex === 0 ? images.paxBusinessmanWalking : images.paxBusinessmanWalking2;
+        // Use walking sprites for businessman, idle sprite for others (no walking anim yet)
+        if (pax.type === 'businessman') {
+          const stepIndex = Math.floor((now - pax.slideStartTime) / 250) % 2;
+          img = stepIndex === 0 ? images.paxBusinessmanWalking : images.paxBusinessmanWalking2;
+        } else {
+          img = images[getPaxImageKey(pax.type, 'idle')] || images.paxBusinessmanIdle;
+        }
       } else {
         img = getPassengerImage(pax);
       }
