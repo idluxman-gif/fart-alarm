@@ -304,6 +304,7 @@
 
     gameOver: false,
     gameOverTime: 0,
+    levelCleared: false,
 
     // Boss floor
     isBossFloor: false,
@@ -389,7 +390,7 @@
   }
 
   function getPassengerImage(pax) {
-    const visualState = state.gameOver ? 'gameover'
+    const visualState = (state.gameOver && !state.levelCleared) ? 'gameover'
       : pax.state === 'reacting' ? 'reacting'
       : pax.state === 'suspicious' ? 'suspicious'
       : 'idle';
@@ -397,8 +398,12 @@
     return images[key] || images.paxBusinessmanIdle;
   }
 
+  let lastExitedType = '';
+
   function getRandomPaxType() {
-    return PAX_TYPES[Math.floor(Math.random() * PAX_TYPES.length)];
+    // Avoid same type that just exited
+    const available = PAX_TYPES.filter(t => t !== lastExitedType);
+    return available[Math.floor(Math.random() * available.length)];
   }
 
   // ─── Bubbles ────────────────────────────────────────────────────
@@ -414,7 +419,7 @@
 
   // ─── Tap Handling ───────────────────────────────────────────────
   function handleTap() {
-    if (state.victoryScreen) { restartGame(); startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
+    if (state.levelCleared || state.victoryScreen) { restartGame(); startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
     if (state.gameOver) { restartGame(); startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
     if (needsUserGesture) { startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
     if (state.rhythmPaused || state.countdownPhase) return;
@@ -436,9 +441,11 @@
   function registerResult(type) {
     const now = performance.now();
     if (type === 'perfect') {
-      // FIX #2: snap meter to segment boundaries
-      state.meter = Math.max(0, roundToSegment(state.meter + CONFIG.meterPerfect));
       state.combo++; state.perfects++; state.floorPerfects++;
+      // Meter only reduces on combo ≥ 2 (consecutive perfects)
+      if (state.combo >= 2) {
+        state.meter = Math.max(0, roundToSegment(state.meter + CONFIG.meterPerfect));
+      }
       state.score += 100 * (1 + Math.floor(state.combo / 5) * 0.1);
       showPopup('perfect', now);
     } else if (type === 'good') {
@@ -535,7 +542,7 @@
       if (pax.exiting) {
         const elapsed = now - pax.slideStartTime;
         pax.slideProgress = Math.max(0, 1 - elapsed / CONFIG.floorPassengerSlideDuration);
-        if (pax.slideProgress <= 0) { state.passengers.splice(i, 1); continue; }
+        if (pax.slideProgress <= 0) { lastExitedType = pax.type; state.passengers.splice(i, 1); continue; }
       }
 
       // Visual state from meter
@@ -547,7 +554,7 @@
 
   // ─── Update Logic ──────────────────────────────────────────────
   function update(now, dt) {
-    if (state.gameOver) return;
+    if (state.gameOver || state.levelCleared) return;
     const dtSec = dt / 1000;
 
     updatePassengers(now);
@@ -588,7 +595,7 @@
           state.fartsFiredThisFloor = new Set();
 
           if (state.currentFloor > CONFIG.totalFloors) {
-            state.gameOver = true; stopMusic(); return;
+            state.levelCleared = true; stopMusic(); return;
           }
 
           // Check if boss floor should trigger (elevator empty + at boss floor)
@@ -736,7 +743,7 @@
     drawFloorLED();
 
     // 3. Gas cloud BEHIND passengers and Gino (grows during game over, not victory)
-    if (state.gameOver && !state.victoryScreen) drawFumeCloud();
+    if (state.gameOver && !state.victoryScreen && !state.levelCleared) drawFumeCloud();
 
     // 4. Passengers (walking sprites during boarding)
     drawPassengers(now);
@@ -780,8 +787,11 @@
     // 14. Victory screen
     if (state.victoryScreen) drawVictoryScreen(now);
 
-    // 15. Game over text (fume cloud already drawn behind Gino at step 3)
-    if (state.gameOver && !state.victoryScreen) drawGameOver(now);
+    // 15. Level cleared screen
+    if (state.levelCleared) drawLevelCleared(now);
+
+    // 16. Game over text (fume cloud already drawn behind Gino at step 3)
+    if (state.gameOver && !state.victoryScreen && !state.levelCleared) drawGameOver(now);
 
     // 16. Boss floor indicator
     if (state.isBossFloor && state.floorPhase === 'riding' && !state.countdownPhase) drawBossHUD();
@@ -820,7 +830,7 @@
   // Gino sprite based on game state
   function drawGino(now) {
     let ginoImg;
-    if (state.victoryScreen) {
+    if (state.victoryScreen || state.levelCleared) {
       ginoImg = images.ginoVictorious;
     } else if (state.preBossCutscene) {
       ginoImg = images.ginoRelieved;
@@ -1047,7 +1057,7 @@
   function drawFloorLED() {
     // Draw the floor LED image on top of the background's static LED panel
     const floorNum = state.currentFloor;
-    const ledKey = state.isBossFloor || state.preBossCutscene ? 'floorBoss'
+    const ledKey = (state.isBossFloor || state.preBossCutscene || floorNum >= CONFIG.bossFloor) ? 'floorBoss'
       : floorNum >= 0 && floorNum <= 9 ? `floor${floorNum}` : 'floorEmpty';
     const ledImg = images[ledKey] || images.floorEmpty;
 
@@ -1113,6 +1123,26 @@
     ctx.restore();
   }
 
+  function drawLevelCleared(now) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(20, 30, 10, 0.6)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = '#4ade80'; ctx.font = 'bold 42px Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('LEVEL CLEAR!', W / 2, H * 0.22);
+
+    ctx.fillStyle = '#fff'; ctx.font = '20px Arial';
+    ctx.fillText(`Score: ${Math.floor(state.score)}`, W / 2, H * 0.34);
+    ctx.fillText(`Perfects: ${state.perfects}  Good: ${state.goods}`, W / 2, H * 0.39);
+    ctx.fillText(`Misses: ${state.misses}`, W / 2, H * 0.44);
+    ctx.fillText(`Best Combo: ${state.bestCombo}`, W / 2, H * 0.49);
+
+    ctx.fillStyle = '#aaa'; ctx.font = '16px Arial';
+    ctx.fillText('Tap to play again', W / 2, H * 0.58);
+    ctx.restore();
+  }
+
   function drawGameOver(now) {
     const elapsed = now - state.gameOverTime;
     const textDelay = 3000;  // wait 3 seconds for fumes to fill before showing text
@@ -1169,6 +1199,7 @@
       bubbles: [], activePopup: null, gameOver: false, gameOverTime: 0,
       currentFloor: 0, floorPhase: 'riding',
       rhythmPaused: true, beatCount: 0, passengers: [],
+      levelCleared: false,
       isBossFloor: false, preBossCutscene: false, bossDefeated: false,
       victoryScreen: false, victoryTime: 0,
       countdownPhase: true, countdownStartTime: performance.now(),
