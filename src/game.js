@@ -105,6 +105,7 @@
       musicPlaying = true;
       needsUserGesture = false;
       musicBeatOrigin = performance.now();
+      audioClockOrigin = audioCtx.currentTime;
     };
     if (audioCtx.state === 'suspended') {
       audioCtx.resume().then(doStart);
@@ -154,7 +155,7 @@
     floorPassengerSlideDuration: 1200,   // ~4 walking steps at 250ms each
     floorDoorsCloseDuration: 800,
 
-    passengerHeight: H * 0.32,    // same height as Gino
+    passengerHeight: H * 0.38,    // bigger than before — more impressive
 
     // Boss floor
     bossFloor: 10,               // boss triggers at this floor
@@ -196,8 +197,8 @@
     paxInternReacting: 'Assets/characters/pax-intern-reacting.png',
     paxInternGameover: 'Assets/characters/pax-intern-gameover.png',
 
-    paxPhonegazerIdle: 'Assets/characters/pax-phonegazer-idle.jpg',
-    paxPhonegazerSuspicious: 'Assets/characters/pax-phonegazer-suspicious.jpg',
+    paxPhonegazerIdle: 'Assets/characters/pax-phonegazer-idle.png',
+    paxPhonegazerSuspicious: 'Assets/characters/pax-phonegazer-suspicious.png',
     paxPhonegazerReacting: 'Assets/characters/pax-phonegazer-reacting.png',
     paxPhonegazerGameover: 'Assets/characters/pax-phonegazer-gameover.png',
 
@@ -259,15 +260,24 @@
     return Promise.all(Object.entries(ASSETS).map(([k, s]) => loadImage(k, s)));
   }
 
-  // ─── Beat Grid Sync ─────────────────────────────────────────────
-  // Calculate the next beat time on the continuous music grid
-  // This keeps beats in sync across floor transitions
-  let musicBeatOrigin = 0; // performance.now() when beat grid started
+  // ─── Beat Grid Sync (audio-clock based) ─────────────────────────
+  // Use audioCtx.currentTime as the master clock — it never drifts from the music.
+  // Convert to performance.now() scale for the game loop.
+  let musicBeatOrigin = 0;        // performance.now() when music started
+  let audioClockOrigin = 0;       // audioCtx.currentTime when music started
+
+  // Get current music time in ms (synced to audio clock, not performance.now)
+  function getMusicTimeMs() {
+    if (!audioCtx || !musicPlaying) return performance.now() - musicBeatOrigin;
+    // Map audio clock to performance.now scale
+    const audioElapsed = (audioCtx.currentTime - audioClockOrigin) * 1000;
+    return audioElapsed;
+  }
 
   function getNextBeatOnGrid(now) {
     const beatMs = CONFIG.beatInterval;
-    const elapsed = now - musicBeatOrigin;
-    const beatsSinceOrigin = Math.ceil(elapsed / beatMs);
+    const musicTime = getMusicTimeMs();
+    const beatsSinceOrigin = Math.ceil(musicTime / beatMs);
     return musicBeatOrigin + beatsSinceOrigin * beatMs;
   }
 
@@ -319,12 +329,13 @@
   // Front row: same size as Gino, standing beside him
   // Back row: slightly smaller + higher to create depth
   const PAX_SLOTS = [
-    { id: 'front-left',  x: 0.05, y: 0.62, scale: 1.0,  zIndex: 2 },
-    { id: 'front-right', x: 0.60, y: 0.62, scale: 1.0,  zIndex: 2 },
-    // Back row: bigger (0.90), positioned BETWEEN front chars and Gino, higher up
-    { id: 'back-left',   x: 0.20, y: 0.55, scale: 0.90, zIndex: 1 },
-    { id: 'back-right',  x: 0.50, y: 0.55, scale: 0.90, zIndex: 1 },
-    { id: 'back-center', x: 0.35, y: 0.50, scale: 0.85, zIndex: 0 },
+    // Front row: flanking the sides
+    { id: 'front-left',  x: 0.02, y: 0.62, scale: 1.0,  zIndex: 2 },
+    { id: 'front-right', x: 0.58, y: 0.62, scale: 1.0,  zIndex: 2 },
+    // Back row: between Gino and front characters, slightly higher for depth
+    { id: 'mid-left',    x: 0.18, y: 0.58, scale: 0.95, zIndex: 1 },
+    { id: 'mid-right',   x: 0.45, y: 0.58, scale: 0.95, zIndex: 1 },
+    { id: 'mid-center',  x: 0.32, y: 0.55, scale: 0.90, zIndex: 0 },
   ];
 
   function createPassenger(type, slotIndex) {
@@ -338,9 +349,9 @@
   // ─── Layout ─────────────────────────────────────────────────────
   function getGinoLayout() {
     const img = images.ginoIdle;
-    const targetH = H * 0.32;
+    const targetH = H * 0.38;
     const scale = targetH / img.height;
-    return { drawW: img.width * scale, drawH: targetH, drawX: (W - img.width * scale) / 2, drawY: H - targetH - 50 };
+    return { drawW: img.width * scale, drawH: targetH, drawX: (W - img.width * scale) / 2, drawY: H - targetH - 30 };
   }
 
   function getFartMeterLayout() {
@@ -644,6 +655,18 @@
     if (state.countdownPhase) return;
 
     // ── Normal riding phase ──
+    // Re-sync nextBeatTime to the audio clock each frame to prevent drift
+    if (audioCtx && musicPlaying) {
+      const musicMs = getMusicTimeMs();
+      const beatMs = CONFIG.beatInterval;
+      const currentBeat = Math.floor(musicMs / beatMs);
+      const audioSyncedNext = musicBeatOrigin + (currentBeat + 1) * beatMs;
+      // Only correct if drift exceeds 5ms (avoid jitter)
+      if (Math.abs(state.nextBeatTime - audioSyncedNext) > 5) {
+        state.nextBeatTime = audioSyncedNext;
+      }
+    }
+
     // Spawn bubbles
     while (state.nextBeatTime <= now + CONFIG.bubbleTravelTime) {
       spawnBubble(state.nextBeatTime);
@@ -1178,6 +1201,7 @@
     state.pendingPassenger = null;
     fumeFrame = 0;
     musicBeatOrigin = performance.now();
+    if (audioCtx) audioClockOrigin = audioCtx.currentTime;
   }
 
   function init() {
