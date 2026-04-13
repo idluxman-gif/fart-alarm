@@ -52,6 +52,11 @@
       loadSfx('fart-md', 'Assets/audio/fart-md.mp3'),
       loadSfx('fart-lg', 'Assets/audio/fart-lg.mp3'),
       loadSfx('fart-gameover', 'Assets/audio/fart relief.mp3'),
+      loadSfx('event-phone', 'Assets/audio/event-phone.wav'),
+      loadSfx('event-sneeze', 'Assets/audio/event-sneeze.mp3'),
+      loadSfx('event-jolt', 'Assets/audio/event-jolt.wav'),
+      loadSfx('event-success', 'Assets/audio/event-success.wav'),
+      loadSfx('event-fail', 'Assets/audio/event-fail.wav'),
     ]));
   }
 
@@ -821,28 +826,30 @@
     const event = { type, startTime: now, resolved: false };
 
     if (type === 'phone') {
-      // Random position in upper half, away from edges
-      event.x = 60 + Math.random() * (W - 160);
-      event.y = 80 + Math.random() * (H * 0.3);
+      // Safe zone: 20-80% width, 25-55% height
+      event.x = W * 0.2 + Math.random() * (W * 0.6);
+      event.y = H * 0.25 + Math.random() * (H * 0.3);
+      playSfx('event-phone');
     } else if (type === 'sneeze') {
-      // Above a random passenger (or Gino if no passengers)
       const activePax = state.passengers.filter(p => !p.exiting && !p.boarding);
       if (activePax.length > 0) {
-        event.targetPaxIndex = Math.floor(Math.random() * activePax.length);
-        event.targetPax = activePax[event.targetPaxIndex];
+        const idx = Math.floor(Math.random() * activePax.length);
+        event.targetPax = activePax[idx];
       } else {
-        event.targetPax = null; // will position above Gino
+        event.targetPax = null;
       }
+      playSfx('event-sneeze');
     } else if (type === 'jolt') {
-      event.joltStep = 0; // 0 = waiting for left tap, 1 = waiting for right tap
+      event.joltStep = 0;
       event.shakeOffset = 0;
+      playSfx('event-jolt');
     }
 
     state.currentEvent = event;
     state.eventFiredThisFloor = true;
 
-    // Freeze bubbles — they stop moving during the event
-    state.eventBubbleFreezeTime = now;
+    // FULLY clear all bubbles — rhythm stops completely
+    state.bubbles = [];
   }
 
   function resolveEvent(success, now) {
@@ -850,30 +857,31 @@
     state.currentEvent.resolved = true;
 
     if (!success) {
-      // Apply penalty
       const penalties = { phone: CONFIG.eventPhonePenalty, sneeze: CONFIG.eventSneezePenalty, jolt: CONFIG.eventJoltPenalty };
       const penalty = penalties[state.currentEvent.type] || 0.10;
       state.meter = Math.min(1, roundToSegment(state.meter + penalty));
       checkFartThresholds();
+      playSfx('event-fail');
       if (state.meter >= 1.0) { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; } stopMusic(); }
     } else {
-      state.score += 200; // bonus for handling event
+      state.score += 200;
+      playSfx('event-success');
     }
 
     state.eventResultFlash = { success, startTime: now };
 
-    // Resume rhythm after a brief delay (300ms)
+    // Resume rhythm after a brief pause
     setTimeout(() => {
       state.currentEvent = null;
-      // Snap back to beat grid
-      state.nextBeatTime = getNextBeatOnGrid(performance.now());
-      // Ensure first bubble has full travel time
-      const minFirstHit = performance.now() + CONFIG.bubbleTravelTime;
+      // Snap to beat grid, ensure first bubble has full travel time
+      const resumeNow = performance.now();
+      state.nextBeatTime = getNextBeatOnGrid(resumeNow);
+      const minFirstHit = resumeNow + CONFIG.bubbleTravelTime;
       if (state.nextBeatTime < minFirstHit) {
         const skip = Math.ceil((minFirstHit - state.nextBeatTime) / CONFIG.beatInterval);
         state.nextBeatTime += skip * CONFIG.beatInterval;
       }
-    }, 300);
+    }, 500);
   }
 
   function handleEventTap(tapX, tapY, now) {
@@ -933,10 +941,10 @@
     // 5. Gino (meter-reactive sprite)
     drawGino(now);
 
-    // 5. Tap zone + bubbles (only during riding, not countdown)
-    if (state.floorPhase === 'riding' && !state.countdownPhase && !state.victoryScreen) {
+    // 5. Tap zone + bubbles (hidden during events, countdown, victory)
+    const eventActive = state.currentEvent && !state.currentEvent.resolved;
+    if (state.floorPhase === 'riding' && !state.countdownPhase && !state.victoryScreen && !eventActive) {
       drawTapZone();
-      // Boss floor: bubbles are INVISIBLE (audio beat only)
       if (!state.isBossFloor) drawBubbles(now);
     }
 
@@ -1166,63 +1174,75 @@
     const ev = state.currentEvent;
     const elapsed = now - ev.startTime;
     const pulse = 0.7 + Math.sin(now / 150) * 0.3;
-
-
-    // Dim the tap zone to show rhythm is paused
-    // (already handled by not drawing bubbles during events)
-
-    // Timer bar at top
     const timeLeft = Math.max(0, 1 - elapsed / CONFIG.eventTimeout);
+
+    // 1. Dark background overlay
     ctx.save();
-    ctx.fillStyle = timeLeft > 0.3 ? '#fbbf24' : '#ef4444';
-    ctx.fillRect(0, 0, W * timeLeft, 4);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.fillRect(0, 0, W, H);
     ctx.restore();
 
+    // 2. Thick timer bar — centered, prominent
+    const barW = W * 0.7, barH = 10;
+    const barX = (W - barW) / 2, barY = H * 0.58;
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(barX, barY, barW, barH);
+    ctx.fillStyle = timeLeft > 0.3 ? '#fbbf24' : '#ef4444';
+    ctx.fillRect(barX, barY, barW * timeLeft, barH);
+    ctx.restore();
+
+    // 3. Event-specific large centered UI
     if (ev.type === 'phone') {
-      // Phone icon bouncing at random position
-      const bounce = Math.sin(now / 100) * 5;
-      const size = 80;
-      ctx.save();
-      ctx.globalAlpha = pulse;
+      const bounce = Math.sin(now / 80) * 8;
+      const size = 150;
+      ctx.save(); ctx.globalAlpha = pulse;
       ctx.drawImage(images.eventPhone, ev.x - size / 2, ev.y - size / 2 + bounce, size, size);
-      // "TAP!" text
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 16px Arial';
+      ctx.restore();
+      ctx.save();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 22px Arial';
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      ctx.fillText('📱 TAP TO SILENCE!', ev.x, ev.y + size / 2 + 8);
+      ctx.fillText('📱 TAP TO SILENCE!', ev.x, ev.y + size / 2 + 12);
       ctx.restore();
 
     } else if (ev.type === 'sneeze') {
-      // Sneeze indicator above a passenger
-      let sx, sy;
+      let targetX, targetY;
       if (ev.targetPax) {
         const layout = getPassengerLayout(ev.targetPax);
-        sx = layout.drawX + layout.drawW / 2;
-        sy = layout.drawY - 30;
+        targetX = layout.drawX + layout.drawW / 2;
+        targetY = layout.drawY;
       } else {
         const gino = getGinoLayout();
-        sx = gino.drawX + gino.drawW / 2;
-        sy = gino.drawY - 30;
+        targetX = gino.drawX + gino.drawW / 2;
+        targetY = gino.drawY;
       }
-      const imgW = 120, imgH = 60;
+      const imgW = 220, imgH = 110;
+      ctx.save(); ctx.globalAlpha = pulse;
+      ctx.drawImage(images.eventSneeze, W / 2 - imgW / 2, H * 0.28, imgW, imgH);
+      ctx.restore();
+      // Arrow to passenger
       ctx.save();
-      ctx.globalAlpha = pulse;
-      ctx.drawImage(images.eventSneeze, sx - imgW / 2, sy - imgH, imgW, imgH);
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 14px Arial';
-      ctx.textAlign = 'center';
-      ctx.fillText('TAP: "Bless you!"', sx, sy + 10);
+      ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 3; ctx.setLineDash([6, 4]);
+      ctx.beginPath(); ctx.moveTo(W / 2, H * 0.28 + imgH); ctx.lineTo(targetX, targetY); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+      ctx.save();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 20px Arial'; ctx.textAlign = 'center';
+      ctx.fillText('TAP: "Bless you!"', W / 2, H * 0.28 + imgH + 20);
       ctx.restore();
 
     } else if (ev.type === 'jolt') {
-      const imgW = 160, imgH = 50;
+      const imgW = W * 0.7, imgH = imgW * 0.25;
+      ctx.save(); ctx.globalAlpha = pulse;
+      ctx.drawImage(images.eventJolt, (W - imgW) / 2, H * 0.35, imgW, imgH);
+      ctx.restore();
       ctx.save();
-      ctx.globalAlpha = pulse;
-      ctx.drawImage(images.eventJolt, W / 2 - imgW / 2, H * 0.4 - imgH / 2, imgW, imgH);
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 16px Arial';
-      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 24px Arial'; ctx.textAlign = 'center';
       if (ev.joltStep === 0) {
-        ctx.fillText('⬅️ TAP LEFT SIDE!', W / 2, H * 0.4 + 40);
+        ctx.fillText('⬅️ TAP LEFT SIDE!', W / 2, H * 0.35 + imgH + 25);
       } else {
-        ctx.fillText('➡️ NOW TAP RIGHT!', W / 2, H * 0.4 + 40);
+        ctx.fillStyle = '#4ade80';
+        ctx.fillText('✅ NOW TAP RIGHT! ➡️', W / 2, H * 0.35 + imgH + 25);
       }
       ctx.restore();
     }
@@ -1232,9 +1252,13 @@
     const elapsed = now - state.eventResultFlash.startTime;
     const alpha = Math.max(0, 1 - elapsed / 600);
     ctx.save();
-    ctx.globalAlpha = alpha * 0.3;
+    ctx.globalAlpha = alpha * 0.4;
     ctx.fillStyle = state.eventResultFlash.success ? '#22c55e' : '#ef4444';
     ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 28px Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(state.eventResultFlash.success ? '✅ Nice!' : '❌ Too slow!', W / 2, H * 0.45);
     ctx.restore();
   }
 
