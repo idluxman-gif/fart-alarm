@@ -145,7 +145,7 @@
 
     // FIX #3: 30-second floors. At 85 BPM, 30s = ~42 beats
     beatsPerFloor: 42,
-    totalFloors: 15,
+    totalFloors: 10,
 
     // FIX #4: Extended floor transition for full door sequence
     // Phases: ding (500ms) → doors open (800ms) → passenger slide (800ms) → doors close (800ms) → countdown (3 beats)
@@ -157,7 +157,7 @@
     passengerHeight: H * 0.32,    // same height as Gino
 
     // Boss floor
-    bossFloor: 15,               // boss triggers at this floor
+    bossFloor: 10,               // boss triggers at this floor
     bossDurationBeats: 128,      // 90 seconds at 85 BPM ≈ 128 beats
     bossMissPenalty: 0.20,       // +20% per miss during boss
     preBossCutsceneDuration: 5000, // 5 seconds for cutscene
@@ -241,6 +241,7 @@
     floor7: 'Assets/Backgrounds/floor7.png',
     floor8: 'Assets/Backgrounds/floor8.png',
     floor9: 'Assets/Backgrounds/floor9.png',
+    floorBoss: 'Assets/Backgrounds/FloorBoss.png',
   };
 
   const images = {};
@@ -1045,7 +1046,8 @@
   function drawFloorLED() {
     // Draw the floor LED image on top of the background's static LED panel
     const floorNum = state.currentFloor;
-    const ledKey = floorNum >= 0 && floorNum <= 9 ? `floor${floorNum}` : 'floorEmpty';
+    const ledKey = state.isBossFloor || state.preBossCutscene ? 'floorBoss'
+      : floorNum >= 0 && floorNum <= 9 ? `floor${floorNum}` : 'floorEmpty';
     const ledImg = images[ledKey] || images.floorEmpty;
 
     // Position: centered horizontally, aligned with the LED panel in the background
