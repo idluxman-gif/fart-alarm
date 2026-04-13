@@ -105,7 +105,6 @@
       musicPlaying = true;
       needsUserGesture = false;
       musicBeatOrigin = performance.now();
-      audioClockOrigin = audioCtx.currentTime;
     };
     if (audioCtx.state === 'suspended') {
       audioCtx.resume().then(doStart);
@@ -260,25 +259,16 @@
     return Promise.all(Object.entries(ASSETS).map(([k, s]) => loadImage(k, s)));
   }
 
-  // ─── Beat Grid Sync (audio-clock based) ─────────────────────────
-  // Use audioCtx.currentTime as the master clock — it never drifts from the music.
-  // Convert to performance.now() scale for the game loop.
-  let musicBeatOrigin = 0;        // performance.now() when music started
-  let audioClockOrigin = 0;       // audioCtx.currentTime when music started
-
-  // Get current music time in ms (synced to audio clock, not performance.now)
-  function getMusicTimeMs() {
-    if (!audioCtx || !musicPlaying) return performance.now() - musicBeatOrigin;
-    // Map audio clock to performance.now scale
-    const audioElapsed = (audioCtx.currentTime - audioClockOrigin) * 1000;
-    return audioElapsed;
-  }
+  // ─── Beat Grid Sync ─────────────────────────────────────────────
+  // Keep a continuous beat grid based on performance.now() origin.
+  // After floor transitions, snap nextBeatTime to the nearest future beat on this grid.
+  let musicBeatOrigin = 0; // performance.now() when beat grid started
 
   function getNextBeatOnGrid(now) {
     const beatMs = CONFIG.beatInterval;
-    const musicTime = getMusicTimeMs();
-    const beatsSinceOrigin = Math.ceil(musicTime / beatMs);
-    return musicBeatOrigin + beatsSinceOrigin * beatMs;
+    const elapsed = now - musicBeatOrigin;
+    const nextBeatIndex = Math.ceil(elapsed / beatMs);
+    return musicBeatOrigin + nextBeatIndex * beatMs;
   }
 
   // ─── Game State ─────────────────────────────────────────────────
@@ -655,18 +645,6 @@
     if (state.countdownPhase) return;
 
     // ── Normal riding phase ──
-    // Re-sync nextBeatTime to the audio clock each frame to prevent drift
-    if (audioCtx && musicPlaying) {
-      const musicMs = getMusicTimeMs();
-      const beatMs = CONFIG.beatInterval;
-      const currentBeat = Math.floor(musicMs / beatMs);
-      const audioSyncedNext = musicBeatOrigin + (currentBeat + 1) * beatMs;
-      // Only correct if drift exceeds 5ms (avoid jitter)
-      if (Math.abs(state.nextBeatTime - audioSyncedNext) > 5) {
-        state.nextBeatTime = audioSyncedNext;
-      }
-    }
-
     // Spawn bubbles
     while (state.nextBeatTime <= now + CONFIG.bubbleTravelTime) {
       spawnBubble(state.nextBeatTime);
@@ -1201,7 +1179,6 @@
     state.pendingPassenger = null;
     fumeFrame = 0;
     musicBeatOrigin = performance.now();
-    if (audioCtx) audioClockOrigin = audioCtx.currentTime;
   }
 
   function init() {
