@@ -359,6 +359,10 @@
     gameOverTime: 0,
     levelCleared: false,
 
+    // Pause
+    paused: false,              // true when pause menu is showing
+    pauseConfirmQuit: false,    // true when "are you sure?" is showing
+
     // Boss floor
     isBossFloor: false,
     preBossCutscene: false,     // true during the pre-boss cutscene
@@ -591,12 +595,47 @@
     // Menu screens
     if (state.menuScreen) { handleMenuTap(lastTapX, lastTapY); return; }
 
-    // Endless mode X button (top-right corner)
-    if (state.testOptions.endless && !state.menuScreen) {
+    // Pause menu handling
+    if (state.paused) {
       const rect = canvas.getBoundingClientRect();
       const tx = (lastTapX - rect.left) * (W / rect.width);
       const ty = (lastTapY - rect.top) * (H / rect.height);
-      if (tx > W - 45 && ty < 45) { restartGame(); return; }
+      const btnW = W * 0.55, btnH = 48;
+
+      if (!state.pauseConfirmQuit) {
+        // Resume button
+        if (ty > H * 0.42 && ty < H * 0.42 + btnH && tx > W / 2 - btnW / 2 && tx < W / 2 + btnW / 2) {
+          state.paused = false;
+          state.lastTime = performance.now(); // avoid dt spike
+        }
+        // Quit button
+        if (ty > H * 0.55 && ty < H * 0.55 + btnH && tx > W / 2 - btnW / 2 && tx < W / 2 + btnW / 2) {
+          state.pauseConfirmQuit = true;
+        }
+      } else {
+        const confirmW = btnW * 0.42;
+        // Yes — quit
+        if (ty > H * 0.48 && ty < H * 0.48 + btnH && tx > W / 2 - confirmW - 8 && tx < W / 2 - 8) {
+          restartGame();
+        }
+        // No — back to pause
+        if (ty > H * 0.48 && ty < H * 0.48 + btnH && tx > W / 2 + 8 && tx < W / 2 + confirmW + 8) {
+          state.pauseConfirmQuit = false;
+        }
+      }
+      return;
+    }
+
+    // Pause button (top-left corner)
+    if (!state.menuScreen && !state.gameOver && !state.levelCleared && !state.victoryScreen) {
+      const rect = canvas.getBoundingClientRect();
+      const tx = (lastTapX - rect.left) * (W / rect.width);
+      const ty = (lastTapY - rect.top) * (H / rect.height);
+      if (tx < 48 && ty < 45) {
+        state.paused = true;
+        state.pauseConfirmQuit = false;
+        return;
+      }
     }
 
     if (state.levelCleared || state.victoryScreen || state.gameOver) { restartGame(); return; }
@@ -744,7 +783,7 @@
 
   // ─── Update Logic ──────────────────────────────────────────────
   function update(now, dt) {
-    if (state.gameOver || state.levelCleared) return;
+    if (state.gameOver || state.levelCleared || state.paused) return;
     const dtSec = dt / 1000;
 
     updatePassengers(now);
@@ -1177,7 +1216,8 @@
 
     // 10. HUD
     drawComboHUD();
-    if (state.testOptions.endless && !state.menuScreen) drawEndlessExitBtn();
+    if (!state.menuScreen && !state.gameOver && !state.levelCleared && !state.victoryScreen) drawPauseBtn();
+    if (state.paused) drawPauseMenu();
 
     // 10. Floor transition text (ding phase only — doors use the open bg)
     if (state.floorPhase === 'ding') drawFloorTransitionText(now);
@@ -1578,13 +1618,60 @@
     ctx.restore();
   }
 
-  function drawEndlessExitBtn() {
+  function drawPauseBtn() {
     ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    roundRect(ctx, W - 42, 8, 34, 34, 8); ctx.fill();
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 18px Arial';
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    roundRect(ctx, 10, 8, 34, 34, 8); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 20px Arial';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('\u2715', W - 25, 25);
+    ctx.fillText('⏸', 27, 26);
+    ctx.restore();
+  }
+
+  function drawPauseMenu() {
+    ctx.save();
+    // Dark overlay
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(0, 0, W, H);
+
+    // Title
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 32px Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('PAUSED', W / 2, H * 0.30);
+
+    const btnW = W * 0.55, btnH = 48;
+
+    if (!state.pauseConfirmQuit) {
+      // Resume button
+      ctx.fillStyle = '#22c55e';
+      roundRect(ctx, W / 2 - btnW / 2, H * 0.42, btnW, btnH, 12); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 20px Arial';
+      ctx.fillText('▶ Resume', W / 2, H * 0.42 + btnH / 2);
+
+      // Quit button
+      ctx.fillStyle = '#ef4444';
+      roundRect(ctx, W / 2 - btnW / 2, H * 0.55, btnW, btnH, 12); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.fillText('✕ Quit Game', W / 2, H * 0.55 + btnH / 2);
+    } else {
+      // Confirm quit
+      ctx.fillStyle = '#fbbf24'; ctx.font = '20px Arial';
+      ctx.fillText('Are you sure?', W / 2, H * 0.40);
+
+      // Yes (checkmark)
+      const confirmW = btnW * 0.42;
+      ctx.fillStyle = '#ef4444';
+      roundRect(ctx, W / 2 - confirmW - 8, H * 0.48, confirmW, btnH, 12); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 22px Arial';
+      ctx.fillText('✓ Yes', W / 2 - confirmW / 2 - 8, H * 0.48 + btnH / 2);
+
+      // No (X)
+      ctx.fillStyle = '#555';
+      roundRect(ctx, W / 2 + 8, H * 0.48, confirmW, btnH, 12); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.fillText('✕ No', W / 2 + confirmW / 2 + 8, H * 0.48 + btnH / 2);
+    }
+
     ctx.restore();
   }
 
@@ -1861,7 +1948,7 @@
       bubbles: [], activePopup: null, gameOver: false, gameOverTime: 0,
       currentFloor: 0, floorPhase: 'riding',
       rhythmPaused: true, beatCount: 0, passengers: [],
-      levelCleared: false,
+      levelCleared: false, paused: false, pauseConfirmQuit: false,
       currentEvent: null, eventFiredThisFloor: false, eventTriggerBeat: 0, eventResultFlash: null,
       isBossFloor: false, preBossCutscene: false, bossDefeated: false,
       victoryScreen: false, victoryTime: 0,
