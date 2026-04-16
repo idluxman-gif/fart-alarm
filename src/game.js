@@ -319,6 +319,7 @@
       bossFloor: false,
       maxPassengers: false,
       slowMeter: false,
+      endless: false,
     },
 
     nextBeatTime: 0, bubbles: [], beatCount: 0,
@@ -499,6 +500,7 @@
     { key: 'bossFloor',     label: 'Skip to Boss Floor' },
     { key: 'maxPassengers', label: 'Max Passengers (5)' },
     { key: 'slowMeter',     label: 'Slow Meter (10% speed)' },
+    { key: 'endless',       label: 'Endless (no game over)' },
   ];
 
   function handleMenuTap(tapX, tapY) {
@@ -571,6 +573,14 @@
   function handleTap() {
     // Menu screens
     if (state.menuScreen) { handleMenuTap(lastTapX, lastTapY); return; }
+
+    // Endless mode X button (top-right corner)
+    if (state.testOptions.endless && !state.menuScreen) {
+      const rect = canvas.getBoundingClientRect();
+      const tx = (lastTapX - rect.left) * (W / rect.width);
+      const ty = (lastTapY - rect.top) * (H / rect.height);
+      if (tx > W - 45 && ty < 45) { restartGame(); return; }
+    }
 
     if (state.levelCleared || state.victoryScreen || state.gameOver) { restartGame(); return; }
     if (state.rhythmPaused || state.countdownPhase) return;
@@ -761,7 +771,11 @@
           scheduleEventForFloor();
 
           if (state.currentFloor > CONFIG.totalFloors) {
-            state.levelCleared = true; stopMusic(); return;
+            if (state.testOptions.endless) {
+              state.currentFloor = 0; // loop back to floor 0
+            } else {
+              state.levelCleared = true; stopMusic(); return;
+            }
           }
 
           // Check if boss floor should trigger (elevator empty + at boss floor)
@@ -853,7 +867,7 @@
           state.combo = 0; state.misses++; state.floorMisses++;
           showPopup('miss', now);
           checkFartThresholds();
-          if (state.meter >= 1.0) { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; } stopMusic(); }
+          if (state.meter >= 1.0) { if (state.testOptions.endless) { state.meter = 0; state.fartsFiredThisFloor = new Set(); } else { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; } stopMusic(); } }
         } else {
           registerResult('miss');
         }
@@ -886,7 +900,7 @@
       state.meter = Math.max(0, state.meter + CONFIG.meterComboDecay * dtSec);
     }
 
-    if (state.meter >= 1.0) { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; } stopMusic(); }
+    if (state.meter >= 1.0) { if (state.testOptions.endless) { state.meter = 0; state.fartsFiredThisFloor = new Set(); } else { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; } stopMusic(); } }
 
     // Popup expiry
     if (state.activePopup && now - state.activePopup.startTime > CONFIG.comboPopupDuration) {
@@ -921,15 +935,28 @@
     const floorBeats = state.isBossFloor ? CONFIG.bossDurationBeats : CONFIG.beatsPerFloor;
     if (state.beatCount >= floorBeats) {
       if (state.isBossFloor) {
-        // Boss survived! Victory!
-        state.bossDefeated = true;
-        state.isBossFloor = false;
-        state.victoryScreen = true;
-        state.victoryTime = now;
-        state.rhythmPaused = true;
-        state.bubbles = [];
-        stopMusic();
-        playDing(); // victory ding
+        if (state.testOptions.endless) {
+          // Endless: loop back from boss
+          state.isBossFloor = false;
+          state.bossDefeated = false;
+          state.currentFloor = 0;
+          state.beatCount = 0;
+          state.floorPhase = 'countdown';
+          state.countdownPhase = true;
+          state.countdownStartTime = now;
+          state.bubbles = [];
+          playDing();
+        } else {
+          // Boss survived! Victory!
+          state.bossDefeated = true;
+          state.isBossFloor = false;
+          state.victoryScreen = true;
+          state.victoryTime = now;
+          state.rhythmPaused = true;
+          state.bubbles = [];
+          stopMusic();
+          playDing();
+        }
       } else {
         state.floorPhase = 'ding';
         state.floorTransitionStart = now;
@@ -943,8 +970,8 @@
 
   // ─── Interrupt Events ───────────────────────────────────────────
   function scheduleEventForFloor() {
-    // Decide if this floor gets an event and when
-    if (state.currentFloor < CONFIG.eventMinFloor || state.isBossFloor) {
+    const anyEventTest = state.testOptions.allEvents || state.testOptions.phoneEvents || state.testOptions.sneezeEvents || state.testOptions.joltEvents;
+    if ((!anyEventTest && state.currentFloor < CONFIG.eventMinFloor) || state.isBossFloor) {
       state.eventTriggerBeat = 0;
       return;
     }
@@ -1008,7 +1035,7 @@
       state.meter = Math.min(1, roundToSegment(state.meter + penalty));
       checkFartThresholds();
       playSfx('event-fail');
-      if (state.meter >= 1.0) { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; } stopMusic(); }
+      if (state.meter >= 1.0) { if (state.testOptions.endless) { state.meter = 0; state.fartsFiredThisFloor = new Set(); } else { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; } stopMusic(); } }
     } else {
       state.score += 200;
       playSfx('event-success');
@@ -1114,6 +1141,7 @@
 
     // 10. HUD
     drawComboHUD();
+    if (state.testOptions.endless && !state.menuScreen) drawEndlessExitBtn();
 
     // 10. Floor transition text (ding phase only — doors use the open bg)
     if (state.floorPhase === 'ding') drawFloorTransitionText(now);
@@ -1519,6 +1547,16 @@
     const s = 0.6 + scaleP * 0.4;
     ctx.save(); ctx.globalAlpha = fadeP;
     ctx.drawImage(img, W / 2 - baseW * s / 2, CONFIG.bubbleTrackY - 100 - baseH * s / 2, baseW * s, baseH * s);
+    ctx.restore();
+  }
+
+  function drawEndlessExitBtn() {
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    roundRect(ctx, W - 42, 8, 34, 34, 8); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 18px Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('\u2715', W - 25, 25);
     ctx.restore();
   }
 
