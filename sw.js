@@ -1,4 +1,4 @@
-const CACHE_NAME = 'elefartor-v2';
+const CACHE_NAME = 'elefartor-v3';
 
 // Core files to cache for offline play
 const CORE_ASSETS = [

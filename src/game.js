@@ -125,7 +125,6 @@
 
   // ─── World Config ───────────────────────────────────────────────
   const CONFIG = {
-    testMode: true,              // TEST MODE: extended events, 100% 8th notes
     bpm: 85,
     get beatInterval() { return 60000 / this.bpm; },
     bubbleTravelTime: 1800,
@@ -182,7 +181,7 @@
 
     // Interrupt events
     eventMinFloor: 3,            // events start from floor 3
-    get eventTimeout() { return this.testMode ? 10000 : 2000; }, // 10s in test mode, 2s normal
+    eventTimeout: 2000,          // overridden at runtime by testOptions.slowEvents
     eventMinBeat: 8,             // earliest beat an event can trigger
     eventMaxBeat: 20,            // latest beat an event can trigger
     eventPhonePenalty: 0.10,
@@ -200,6 +199,7 @@
 
   // ─── Asset Manifest ─────────────────────────────────────────────
   const ASSETS = {
+    gameLogo: 'Assets/logo.png',
     elevatorBase: 'Assets/Backgrounds/elevator-interior-base3.jpg',
     elevatorOpen: 'Assets/Backgrounds/elevator-interior-base3-open.jpg',
     ginoIdle: 'Assets/characters/gino-idle.png',
@@ -306,6 +306,20 @@
   // ─── Game State ─────────────────────────────────────────────────
   const state = {
     running: false, lastTime: 0,
+
+    // Menu
+    menuScreen: 'main',         // 'main', 'test-config', or null (in game)
+    testOptions: {
+      slowEvents: false,
+      eighthNotes: false,
+      phoneEvents: false,
+      sneezeEvents: false,
+      joltEvents: false,
+      allEvents: false,
+      bossFloor: false,
+      maxPassengers: false,
+      slowMeter: false,
+    },
 
     nextBeatTime: 0, bubbles: [], beatCount: 0,
 
@@ -456,8 +470,12 @@
     });
   }
 
+  function getEventTimeout() {
+    return state.testOptions.slowEvents ? 10000 : getEventTimeout();
+  }
+
   function getEighthNoteChance() {
-    if (CONFIG.testMode) return 1.0; // 100% in test mode
+    if (state.testOptions.eighthNotes) return 1.0;
     const floor = state.currentFloor;
     const chances = CONFIG.eighthNoteChance;
     return floor < chances.length ? chances[floor] : 1.0;
@@ -469,10 +487,92 @@
   }
 
   // ─── Tap Handling ───────────────────────────────────────────────
+  // ─── Menu Constants ──────────────────────────────────────────────
+  const MENU_BTN_H = 50;
+  const TOGGLE_LABELS = [
+    { key: 'slowEvents',    label: 'Slow Events (10s window)' },
+    { key: 'eighthNotes',   label: '8th Notes (100% all floors)' },
+    { key: 'phoneEvents',   label: 'Phone Events only' },
+    { key: 'sneezeEvents',  label: 'Sneeze Events only' },
+    { key: 'joltEvents',    label: 'Jolt Events only' },
+    { key: 'allEvents',     label: 'All Events (from floor 0)' },
+    { key: 'bossFloor',     label: 'Skip to Boss Floor' },
+    { key: 'maxPassengers', label: 'Max Passengers (5)' },
+    { key: 'slowMeter',     label: 'Slow Meter (10% speed)' },
+  ];
+
+  function handleMenuTap(tapX, tapY) {
+    const rect = canvas.getBoundingClientRect();
+    const x = (tapX - rect.left) * (W / rect.width);
+    const y = (tapY - rect.top) * (H / rect.height);
+
+    if (state.menuScreen === 'main') {
+      // PLAY button: y ~ 55-63%
+      if (y > H * 0.55 && y < H * 0.55 + MENU_BTN_H) {
+        state.menuScreen = null;
+        startMusic();
+        state.countdownPhase = true;
+        state.countdownStartTime = performance.now();
+        state.rhythmPaused = true;
+      }
+      // TEST MODE button: y ~ 67-75%
+      if (y > H * 0.67 && y < H * 0.67 + MENU_BTN_H) {
+        state.menuScreen = 'test-config';
+      }
+    } else if (state.menuScreen === 'test-config') {
+      // Toggle rows start at y=18%, each 38px tall
+      const rowStartY = H * 0.18;
+      const rowH = 38;
+      for (let i = 0; i < TOGGLE_LABELS.length; i++) {
+        const ry = rowStartY + i * rowH;
+        if (y > ry && y < ry + rowH) {
+          const key = TOGGLE_LABELS[i].key;
+          state.testOptions[key] = !state.testOptions[key];
+          return;
+        }
+      }
+      // START TEST button
+      const startY = rowStartY + TOGGLE_LABELS.length * rowH + 15;
+      if (y > startY && y < startY + MENU_BTN_H) {
+        state.menuScreen = null;
+        applyTestOptions();
+        startMusic();
+        state.countdownPhase = true;
+        state.countdownStartTime = performance.now();
+        state.rhythmPaused = true;
+      }
+      // BACK button
+      if (y > startY + MENU_BTN_H + 10 && y < startY + MENU_BTN_H * 2 + 10) {
+        state.menuScreen = 'main';
+      }
+    }
+  }
+
+  function applyTestOptions() {
+    const to = state.testOptions;
+    if (to.bossFloor) {
+      state.currentFloor = CONFIG.bossFloor - 1;
+      state.passengers = [];
+    }
+    if (to.maxPassengers) {
+      // Spawn 5 passengers immediately
+      state.passengers = [];
+      for (let i = 0; i < 5; i++) {
+        const pax = createPassenger(getRandomPaxType(), i);
+        pax.slideProgress = 1; pax.boarding = false;
+        state.passengers.push(pax);
+      }
+    }
+    // Force event scheduling from floor 0 if any event test is on
+    const anyEvent = to.allEvents || to.phoneEvents || to.sneezeEvents || to.joltEvents;
+    if (anyEvent) scheduleEventForFloor();
+  }
+
   function handleTap() {
-    if (state.levelCleared || state.victoryScreen) { restartGame(); startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
-    if (state.gameOver) { restartGame(); startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
-    if (needsUserGesture) { startMusic(); state.countdownPhase = true; state.countdownStartTime = performance.now(); state.rhythmPaused = true; return; }
+    // Menu screens
+    if (state.menuScreen) { handleMenuTap(lastTapX, lastTapY); return; }
+
+    if (state.levelCleared || state.victoryScreen || state.gameOver) { restartGame(); return; }
     if (state.rhythmPaused || state.countdownPhase) return;
 
     const now = performance.now();
@@ -773,7 +873,8 @@
     const paxCount = state.passengers.filter(p => !p.exiting).length;
     if (paxCount > 0) {
       const oldMeter = state.meter;
-      state.meter = Math.min(1, state.meter + paxCount * CONFIG.meterPerPassenger * dtSec);
+      const meterMult = state.testOptions.slowMeter ? 0.1 : 1;
+      state.meter = Math.min(1, state.meter + paxCount * CONFIG.meterPerPassenger * dtSec * meterMult);
       // Check if passive fill crossed a threshold
       if (Math.floor(state.meter * 10) > Math.floor(oldMeter * 10)) {
         checkFartThresholds();
@@ -796,15 +897,17 @@
 
     // ── Interrupt Event Logic ──
     // Trigger event at the pre-calculated beat
+    const anyEventTest = state.testOptions.allEvents || state.testOptions.phoneEvents || state.testOptions.sneezeEvents || state.testOptions.joltEvents;
+    const eventFloorOk = anyEventTest ? true : state.currentFloor >= CONFIG.eventMinFloor;
     if (!state.currentEvent && !state.eventFiredThisFloor
-        && state.currentFloor >= CONFIG.eventMinFloor && !state.isBossFloor
+        && eventFloorOk && !state.isBossFloor
         && state.beatCount >= state.eventTriggerBeat && state.eventTriggerBeat > 0) {
       triggerRandomEvent(now);
     }
 
     // Update active event (timeout check)
     if (state.currentEvent && !state.currentEvent.resolved) {
-      if (now - state.currentEvent.startTime > CONFIG.eventTimeout) {
+      if (now - state.currentEvent.startTime > getEventTimeout()) {
         resolveEvent(false, now); // timed out = fail
       }
     }
@@ -852,7 +955,18 @@
   }
 
   function triggerRandomEvent(now) {
-    const types = ['phone', 'sneeze', 'jolt'];
+    // Filter event types based on test options
+    let types = ['phone', 'sneeze', 'jolt'];
+    const to = state.testOptions;
+    if (to.phoneEvents || to.sneezeEvents || to.joltEvents) {
+      // Specific events selected — filter to only those
+      types = [];
+      if (to.phoneEvents) types.push('phone');
+      if (to.sneezeEvents) types.push('sneeze');
+      if (to.joltEvents) types.push('jolt');
+    }
+    // allEvents keeps all 3 (default)
+    if (types.length === 0) types = ['phone', 'sneeze', 'jolt'];
     const type = types[Math.floor(Math.random() * types.length)];
 
     const event = { type, startTime: now, resolved: false };
@@ -1007,8 +1121,9 @@
     // 11. Countdown
     if (state.countdownPhase && !needsUserGesture && !state.gameOver) drawCountdown(now);
 
-    // 12. Tap to start
-    if (needsUserGesture && !state.gameOver) drawTapToStart();
+    // 12. Menu screens
+    if (state.menuScreen === 'main') { drawMainMenu(); }
+    else if (state.menuScreen === 'test-config') { drawTestConfig(); }
 
     // 13. Pre-boss cutscene overlay
     if (state.preBossCutscene) drawPreBossCutscene(now);
@@ -1206,7 +1321,7 @@
     const ev = state.currentEvent;
     const elapsed = now - ev.startTime;
     const pulse = 0.7 + Math.sin(now / 150) * 0.3;
-    const timeLeft = Math.max(0, 1 - elapsed / CONFIG.eventTimeout);
+    const timeLeft = Math.max(0, 1 - elapsed / getEventTimeout());
 
     // 1. Dark background overlay
     ctx.save();
@@ -1449,14 +1564,101 @@
     ctx.restore();
   }
 
-  function drawTapToStart() {
-    ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, 0, W, H);
-    const pulse = 0.7 + Math.sin(performance.now() / 400) * 0.3;
-    ctx.globalAlpha = pulse; ctx.fillStyle = '#fff'; ctx.font = 'bold 28px Arial';
+  function drawMainMenu() {
+    ctx.save();
+    ctx.fillStyle = '#1a1a2e'; ctx.fillRect(0, 0, W, H);
+
+    // Logo
+    const logo = images.gameLogo;
+    const logoSize = 120;
+    ctx.drawImage(logo, W / 2 - logoSize / 2, H * 0.10, logoSize, logoSize);
+
+    // Title
+    ctx.fillStyle = '#fbbf24'; ctx.font = 'bold 36px Arial';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('\u{1F3B5} TAP TO START \u{1F3B5}', W / 2, H * 0.45);
-    ctx.globalAlpha = 0.6; ctx.font = '16px Arial';
-    ctx.fillText('Tap the bubbles to the beat!', W / 2, H * 0.52);
+    ctx.fillText('ELEFARTOR', W / 2, H * 0.35);
+
+    ctx.fillStyle = '#aaa'; ctx.font = '14px Arial';
+    ctx.fillText('Survive the elevator. Tap the beat.', W / 2, H * 0.42);
+
+    // PLAY button
+    const btnW = W * 0.6, btnH = MENU_BTN_H;
+    const playY = H * 0.55;
+    ctx.fillStyle = '#22c55e';
+    roundRect(ctx, W / 2 - btnW / 2, playY, btnW, btnH, 12); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 22px Arial';
+    ctx.fillText('\u{1F3AE} PLAY', W / 2, playY + btnH / 2);
+
+    // TEST MODE button
+    const testY = H * 0.67;
+    ctx.fillStyle = '#6366f1';
+    roundRect(ctx, W / 2 - btnW / 2, testY, btnW, btnH, 12); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 22px Arial';
+    ctx.fillText('\u{1F527} TEST MODE', W / 2, testY + btnH / 2);
+
+    ctx.fillStyle = '#555'; ctx.font = '12px Arial';
+    ctx.fillText('v1.0 — Tap the bubbles to the beat!', W / 2, H * 0.92);
+
+    ctx.restore();
+  }
+
+  function drawTestConfig() {
+    ctx.save();
+    ctx.fillStyle = '#1a1a2e'; ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = '#6366f1'; ctx.font = 'bold 26px Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('\u{1F527} TEST MODE', W / 2, H * 0.08);
+
+    ctx.fillStyle = '#aaa'; ctx.font = '13px Arial';
+    ctx.fillText('Tap toggles, then START', W / 2, H * 0.13);
+
+    // Toggle rows
+    const rowStartY = H * 0.18;
+    const rowH = 38;
+    const rowW = W * 0.85;
+    const rowX = (W - rowW) / 2;
+
+    for (let i = 0; i < TOGGLE_LABELS.length; i++) {
+      const { key, label } = TOGGLE_LABELS[i];
+      const ry = rowStartY + i * rowH;
+      const active = state.testOptions[key];
+
+      // Row background
+      ctx.fillStyle = active ? 'rgba(34, 197, 94, 0.25)' : 'rgba(255,255,255,0.06)';
+      roundRect(ctx, rowX, ry + 2, rowW, rowH - 4, 8); ctx.fill();
+
+      // Checkbox
+      ctx.fillStyle = active ? '#22c55e' : '#555';
+      roundRect(ctx, rowX + 8, ry + 9, 20, 20, 4); ctx.fill();
+      if (active) {
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 14px Arial';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('\u2713', rowX + 18, ry + 19);
+      }
+
+      // Label
+      ctx.fillStyle = active ? '#fff' : '#aaa';
+      ctx.font = '14px Arial'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, rowX + 36, ry + rowH / 2);
+    }
+
+    // START TEST button
+    const startY = rowStartY + TOGGLE_LABELS.length * rowH + 15;
+    const btnW = W * 0.6;
+    ctx.fillStyle = '#22c55e';
+    roundRect(ctx, W / 2 - btnW / 2, startY, btnW, MENU_BTN_H, 12); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 20px Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('START TEST', W / 2, startY + MENU_BTN_H / 2);
+
+    // BACK button
+    const backY = startY + MENU_BTN_H + 10;
+    ctx.fillStyle = '#444';
+    roundRect(ctx, W / 2 - btnW / 2, backY, btnW, MENU_BTN_H, 12); ctx.fill();
+    ctx.fillStyle = '#ccc'; ctx.font = 'bold 18px Arial';
+    ctx.fillText('\u2190 BACK', W / 2, backY + MENU_BTN_H / 2);
+
     ctx.restore();
   }
 
@@ -1577,7 +1779,8 @@
       currentEvent: null, eventFiredThisFloor: false, eventTriggerBeat: 0, eventResultFlash: null,
       isBossFloor: false, preBossCutscene: false, bossDefeated: false,
       victoryScreen: false, victoryTime: 0,
-      countdownPhase: true, countdownStartTime: performance.now(),
+      countdownPhase: false,
+      menuScreen: 'main',         // return to menu on restart
       fartsFiredThisFloor: new Set(),
       lastTime: performance.now(),
       nextBeatTime: performance.now() + CONFIG.beatInterval,
@@ -1585,6 +1788,7 @@
     state.pendingPassenger = null;
     fumeFrame = 0;
     musicBeatOrigin = performance.now();
+    stopMusic();
   }
 
   function init() {
