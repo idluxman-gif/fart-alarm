@@ -125,6 +125,7 @@
 
   // ─── World Config ───────────────────────────────────────────────
   const CONFIG = {
+    testMode: true,              // TEST MODE: extended events, 100% 8th notes
     bpm: 85,
     get beatInterval() { return 60000 / this.bpm; },
     bubbleTravelTime: 1800,
@@ -133,8 +134,18 @@
     bubbleTrackY: H * 0.92,     // Y position of the horizontal track
     tapZoneX: W * 0.5,          // tap zone at center horizontally
     bubbleSpawnX: -50,           // spawn off left edge
-    bubbleSize: 50,              // smaller bubbles for horizontal track
+    bubbleSize: 50,              // quarter note bubble size
+    eighthNoteSize: 35,          // 8th note bubble size (70% of quarter)
     tapZoneSize: 65,
+
+    // 8th note frequency by floor (chance each beat spawns an 8th note partner)
+    eighthNoteChance: [
+      0, 0, 0,       // floors 0-2: none
+      0.25, 0.25,    // floors 3-4: 25%
+      0.50, 0.50,    // floors 5-6: 50%
+      0.75, 0.75, 0.75, // floors 7-9: 75%
+      1.0,           // floor 10+: always
+    ],
     countdownBeats: 3,
 
     perfectWindow: 30,
@@ -171,7 +182,7 @@
 
     // Interrupt events
     eventMinFloor: 3,            // events start from floor 3
-    eventTimeout: 2000,          // 2 seconds to respond
+    get eventTimeout() { return this.testMode ? 10000 : 2000; }, // 10s in test mode, 2s normal
     eventMinBeat: 8,             // earliest beat an event can trigger
     eventMaxBeat: 20,            // latest beat an event can trigger
     eventPhonePenalty: 0.10,
@@ -434,9 +445,22 @@
   }
 
   // ─── Bubbles ────────────────────────────────────────────────────
-  function spawnBubble(beatTime) {
+  function spawnBubble(beatTime, isEighth) {
     const adjusted = beatTime + CONFIG.beatOffsetMs;
-    state.bubbles.push({ spawnTime: adjusted - CONFIG.bubbleTravelTime, hitTime: adjusted, hit: false, missed: false });
+    state.bubbles.push({
+      spawnTime: adjusted - CONFIG.bubbleTravelTime,
+      hitTime: adjusted,
+      hit: false,
+      missed: false,
+      isEighth: !!isEighth,  // true for 8th notes, false for quarter notes
+    });
+  }
+
+  function getEighthNoteChance() {
+    if (CONFIG.testMode) return 1.0; // 100% in test mode
+    const floor = state.currentFloor;
+    const chances = CONFIG.eighthNoteChance;
+    return floor < chances.length ? chances[floor] : 1.0;
   }
 
   function getBubbleX(bubble, now) {
@@ -473,7 +497,7 @@
     if (!closest || closestOff > CONFIG.goodWindow) return;
 
     closest.hit = true;
-    state.beatCount++;
+    if (!closest.isEighth) state.beatCount++; // only quarter notes count toward floor progress
     registerResult(closestOff <= CONFIG.perfectWindow ? 'perfect' : 'good');
   }
 
@@ -704,9 +728,17 @@
       // Still check popup expiry and floor done below
     } else {
 
-    // Spawn bubbles
+    // Spawn bubbles (quarter notes + 8th note subdivisions)
     while (state.nextBeatTime <= now + CONFIG.bubbleTravelTime) {
-      spawnBubble(state.nextBeatTime);
+      spawnBubble(state.nextBeatTime, false); // quarter note
+
+      // Maybe spawn an 8th note on the offbeat (halfway between this beat and next)
+      const eighthChance = getEighthNoteChance();
+      if (eighthChance > 0 && Math.random() < eighthChance) {
+        const eighthTime = state.nextBeatTime + CONFIG.beatInterval / 2;
+        spawnBubble(eighthTime, true); // 8th note
+      }
+
       state.nextBeatTime += CONFIG.beatInterval;
     }
 
@@ -714,7 +746,7 @@
     for (const b of state.bubbles) {
       if (!b.hit && !b.missed && now - b.hitTime > CONFIG.goodWindow) {
         b.missed = true;
-        state.beatCount++;
+        if (!b.isEighth) state.beatCount++; // only quarter notes count toward floor progress
         // Boss floor: +20% miss penalty instead of normal
         if (state.isBossFloor) {
           state.meter = Math.min(1, roundToSegment(state.meter + CONFIG.bossMissPenalty));
@@ -1288,24 +1320,35 @@
   }
 
   function drawBubbles(now) {
-    const size = CONFIG.bubbleSize;
     const trackY = CONFIG.bubbleTrackY;
 
     for (const b of state.bubbles) {
-      if (b.hit) continue; // hit bubbles removed from array, but double-check
+      if (b.hit) continue;
 
       const x = getBubbleX(b, now);
+      const size = b.isEighth ? CONFIG.eighthNoteSize : CONFIG.bubbleSize;
 
       if (b.missed) {
-        // Missed: show pink bubble, keep scrolling right, fade out
         const pastMissX = x - CONFIG.tapZoneX;
         const fadeOut = Math.max(0, 1 - pastMissX / (W * 0.5));
         ctx.save();
         ctx.globalAlpha = fadeOut * 0.8;
         ctx.drawImage(images.tapGhostBubbleMiss, x - size / 2, trackY - size / 2, size, size);
         ctx.restore();
+      } else if (b.isEighth) {
+        // 8th note: orange/amber tinted circle
+        const fadeIn = Math.min(1, (x - CONFIG.bubbleSpawnX) / 80);
+        ctx.save();
+        ctx.globalAlpha = fadeIn * 0.85;
+        // Draw the blue bubble then tint it orange
+        ctx.drawImage(images.tapGhostBubble, x - size / 2, trackY - size / 2, size, size);
+        ctx.globalCompositeOperation = 'source-atop';
+        ctx.fillStyle = 'rgba(240, 160, 40, 0.55)';
+        ctx.fillRect(x - size / 2, trackY - size / 2, size, size);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.restore();
       } else {
-        // Normal: blue bubble approaching tap zone
+        // Quarter note: blue bubble
         const fadeIn = Math.min(1, (x - CONFIG.bubbleSpawnX) / 80);
         ctx.save();
         ctx.globalAlpha = fadeIn * 0.85;
