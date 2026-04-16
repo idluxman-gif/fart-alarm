@@ -451,12 +451,29 @@
     return images[key] || images.paxBusinessmanIdle;
   }
 
-  let lastExitedType = '';
+  let recentExitedTypes = []; // track last 2 exited types
 
   function getRandomPaxType() {
-    // Avoid same type that just exited
-    const available = PAX_TYPES.filter(t => t !== lastExitedType);
+    // Avoid the last 2 exited types
+    const available = PAX_TYPES.filter(t => !recentExitedTypes.includes(t));
+    if (available.length === 0) return PAX_TYPES[Math.floor(Math.random() * PAX_TYPES.length)];
     return available[Math.floor(Math.random() * available.length)];
+  }
+
+  // Pre-render orange 8th note bubble to offscreen canvas (avoid per-frame compositing)
+  let eighthNoteBubbleCanvas = null;
+  function createEighthNoteBubble() {
+    const src = images.tapGhostBubble;
+    if (!src) return;
+    const size = 100; // render at high res, scale down when drawing
+    const c2 = document.createElement('canvas');
+    c2.width = size; c2.height = size;
+    const c2x = c2.getContext('2d');
+    c2x.drawImage(src, 0, 0, size, size);
+    c2x.globalCompositeOperation = 'source-atop';
+    c2x.fillStyle = 'rgba(240, 160, 40, 0.55)';
+    c2x.fillRect(0, 0, size, size);
+    eighthNoteBubbleCanvas = c2;
   }
 
   // ─── Bubbles ────────────────────────────────────────────────────
@@ -715,7 +732,7 @@
       if (pax.exiting) {
         const elapsed = now - pax.slideStartTime;
         pax.slideProgress = Math.max(0, 1 - elapsed / CONFIG.floorPassengerSlideDuration);
-        if (pax.slideProgress <= 0) { lastExitedType = pax.type; state.passengers.splice(i, 1); continue; }
+        if (pax.slideProgress <= 0) { recentExitedTypes.push(pax.type); if (recentExitedTypes.length > 2) recentExitedTypes.shift(); state.passengers.splice(i, 1); continue; }
       }
 
       // Visual state from meter
@@ -1062,26 +1079,45 @@
     const ev = state.currentEvent;
 
     if (ev.type === 'phone') {
-      // Tap anywhere near the phone icon
+      // Must tap within 60px radius of the phone icon center
       const dx = tapX - ev.x, dy = tapY - ev.y;
-      if (Math.abs(dx) < 80 && Math.abs(dy) < 80) {
+      if (dx * dx + dy * dy < 60 * 60) {
         resolveEvent(true, now);
         return true;
       }
+      return true; // consume tap but don't resolve (missed the phone)
     } else if (ev.type === 'sneeze') {
-      // Tap on the passenger or Gino
-      resolveEvent(true, now);
-      return true;
-    } else if (ev.type === 'jolt') {
-      if (ev.joltStep === 0 && tapX < W / 2) {
-        ev.joltStep = 1; // left tap done, need right
-        return true;
-      } else if (ev.joltStep === 1 && tapX >= W / 2) {
+      // Must tap within the target passenger's bounding box
+      let targetLayout;
+      if (ev.targetPax) {
+        targetLayout = getPassengerLayout(ev.targetPax);
+      } else {
+        targetLayout = getGinoLayout();
+      }
+      if (tapX >= targetLayout.drawX && tapX <= targetLayout.drawX + targetLayout.drawW
+          && tapY >= targetLayout.drawY && tapY <= targetLayout.drawY + targetLayout.drawH) {
         resolveEvent(true, now);
+        return true;
+      }
+      return true; // consume tap but don't resolve (tapped wrong area)
+    } else if (ev.type === 'jolt') {
+      if (ev.joltStep === 0) {
+        if (tapX < W / 2) {
+          ev.joltStep = 1; // correct: left tap done
+        } else {
+          ev.joltStep = 0; // wrong side: reset
+        }
+        return true;
+      } else if (ev.joltStep === 1) {
+        if (tapX >= W / 2) {
+          resolveEvent(true, now); // correct: right tap done
+        } else {
+          ev.joltStep = 0; // wrong side: reset back to left
+        }
         return true;
       }
     }
-    return false;
+    return true; // consume all taps during events
   }
 
   // ─── Render ─────────────────────────────────────────────────────
@@ -1441,16 +1477,10 @@
     const size = CONFIG.tapZoneSize;
     const trackY = CONFIG.bubbleTrackY;
 
-    // Subtle track line
+    // Subtle track line (solid, no setLineDash for perf)
     ctx.save();
-    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([8, 8]);
-    ctx.beginPath();
-    ctx.moveTo(0, trackY);
-    ctx.lineTo(W, trackY);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fillRect(0, trackY - 1, W, 2);
     ctx.restore();
 
     // Tap zone ring at center
@@ -1479,16 +1509,12 @@
         ctx.drawImage(images.tapGhostBubbleMiss, x - size / 2, trackY - size / 2, size, size);
         ctx.restore();
       } else if (b.isEighth) {
-        // 8th note: orange/amber tinted circle
+        // 8th note: pre-rendered orange bubble (no per-frame compositing)
         const fadeIn = Math.min(1, (x - CONFIG.bubbleSpawnX) / 80);
         ctx.save();
         ctx.globalAlpha = fadeIn * 0.85;
-        // Draw the blue bubble then tint it orange
-        ctx.drawImage(images.tapGhostBubble, x - size / 2, trackY - size / 2, size, size);
-        ctx.globalCompositeOperation = 'source-atop';
-        ctx.fillStyle = 'rgba(240, 160, 40, 0.55)';
-        ctx.fillRect(x - size / 2, trackY - size / 2, size, size);
-        ctx.globalCompositeOperation = 'source-over';
+        const src = eighthNoteBubbleCanvas || images.tapGhostBubble;
+        ctx.drawImage(src, x - size / 2, trackY - size / 2, size, size);
         ctx.restore();
       } else {
         // Quarter note: blue bubble
@@ -1524,13 +1550,15 @@
     ctx.restore();
   }
 
+  // Pre-cache vignette gradient (expensive to create every frame)
+  const vignetteGrad = ctx.createRadialGradient(W / 2, H / 2, H * 0.25, W / 2, H / 2, H * 0.6);
+  vignetteGrad.addColorStop(0, 'transparent'); vignetteGrad.addColorStop(1, '#ff0000');
+
   function drawCriticalVignette() {
     const intensity = (state.meter - 0.70) / 0.30;
     const pulse = 0.3 + Math.sin(performance.now() / 200) * 0.1;
     ctx.save(); ctx.globalAlpha = intensity * pulse;
-    const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.25, W / 2, H / 2, H * 0.6);
-    g.addColorStop(0, 'transparent'); g.addColorStop(1, '#ff0000');
-    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = vignetteGrad; ctx.fillRect(0, 0, W, H);
     ctx.restore();
   }
 
@@ -1796,14 +1824,34 @@
     ctx.quadraticCurveTo(x, y, x + r, y); ctx.closePath();
   }
 
-  // ─── Game Loop ──────────────────────────────────────────────────
+  // ─── Game Loop (rAF primary, setInterval fallback for bg tabs) ──
+  let loopId = 0;
   function gameLoop() {
     const now = performance.now();
     const dt = Math.min(now - state.lastTime, 100);
     state.lastTime = now;
     update(now, dt);
     render(now);
+    loopId = requestAnimationFrame(gameLoop);
   }
+
+  // Fallback: when tab goes to background, rAF stops. Use setInterval.
+  let bgInterval = null;
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      cancelAnimationFrame(loopId);
+      bgInterval = setInterval(() => {
+        const now = performance.now();
+        const dt = Math.min(now - state.lastTime, 100);
+        state.lastTime = now;
+        update(now, dt);
+      }, 50); // lower rate for bg, update only (no render)
+    } else {
+      if (bgInterval) { clearInterval(bgInterval); bgInterval = null; }
+      state.lastTime = performance.now();
+      loopId = requestAnimationFrame(gameLoop);
+    }
+  });
 
   function restartGame() {
     Object.assign(state, {
@@ -1837,7 +1885,8 @@
 
     Promise.all([loadAllAssets(), loadAllAudio()])
       .then(() => {
-        console.log('ELEFARTOR — Phase 3b ready');
+        console.log('ELEFARTOR — ready');
+        createEighthNoteBubble();
         canvas.addEventListener('mousedown', (e) => {
           e.preventDefault();
           lastTapX = e.clientX; lastTapY = e.clientY;
@@ -1851,7 +1900,7 @@
         state.lastTime = performance.now();
         state.nextBeatTime = state.lastTime + CONFIG.beatInterval;
         state.running = true;
-        setInterval(gameLoop, 16);
+        loopId = requestAnimationFrame(gameLoop);
       })
       .catch(err => {
         ctx.fillStyle = '#1a1a2e'; ctx.fillRect(0, 0, W, H);
