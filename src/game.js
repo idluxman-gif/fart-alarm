@@ -385,6 +385,21 @@
     victoryTime: 0,
   };
 
+  // ─── Derived: state.inGameplay ─────────────────────────────────
+  // Single source of truth for "is the player actively playing right now?"
+  // Replaces fragile negation chains throughout the codebase.
+  Object.defineProperty(state, 'inGameplay', {
+    get() {
+      return !this.menuScreen
+        && !this.gameOver
+        && !this.levelCleared
+        && !this.victoryScreen
+        && !this.paused
+        && !this.countdownPhase
+        && !this.preBossCutscene;
+    }
+  });
+
   // ─── Passenger ──────────────────────────────────────────────────
   // Passenger slot positions (relative to canvas)
   // Front row: same size as Gino, standing beside him
@@ -672,8 +687,8 @@
       return;
     }
 
-    // Pause button (top-left corner)
-    if (!state.menuScreen && !state.gameOver && !state.levelCleared && !state.victoryScreen) {
+    // Pause button (top-left corner) — available whenever actively playing
+    if (state.inGameplay || state.countdownPhase) {
       const rect = canvas.getBoundingClientRect();
       const tx = (lastTapX - rect.left) * (W / rect.width);
       const ty = (lastTapY - rect.top) * (H / rect.height);
@@ -1157,12 +1172,25 @@
     // Capture current event to prevent stale timer clearing a NEW event later
     const eventRef = state.currentEvent;
 
-    // Resume rhythm after a brief pause
+    // Resume rhythm after a brief pause.
+    // Guarded against pause: if paused when the timer fires, poll until resume.
     if (state.eventResumeTimer) clearTimeout(state.eventResumeTimer);
-    state.eventResumeTimer = setTimeout(() => {
+
+    const doResume = () => {
+      // If the game was reset (menu) or ended, abort cleanup
+      if (state.menuScreen || state.gameOver) {
+        state.eventResumeTimer = null;
+        return;
+      }
+      // If paused, keep polling — don't modify state while paused
+      if (state.paused) {
+        state.eventResumeTimer = setTimeout(doResume, 100);
+        return;
+      }
+
       // Only clear if this is still the same event (not a fresh one)
       if (state.currentEvent === eventRef) state.currentEvent = null;
-      if (state.gameOver || state.menuScreen) return;
+
       const resumeNow = performance.now();
       state.nextBeatTime = getNextBeatOnGrid(resumeNow);
       const minFirstHit = resumeNow + CONFIG.bubbleTravelTime;
@@ -1170,14 +1198,19 @@
         const skip = Math.ceil((minFirstHit - state.nextBeatTime) / CONFIG.beatInterval);
         state.nextBeatTime += skip * CONFIG.beatInterval;
       }
-      // TEST MODE: re-schedule another event 8-16 beats later (repeat events per floor)
+
+      // Test mode: re-schedule another event for this floor
       const to = state.testOptions;
       const anyEventSelected = to.phoneEvents || to.sneezeEvents || to.joltEvents || to.allEvents;
       if (anyEventSelected && !state.isBossFloor) {
         state.eventFiredThisFloor = false;
         state.eventTriggerBeat = state.beatCount + 8 + Math.floor(Math.random() * 8);
       }
-    }, 500);
+
+      state.eventResumeTimer = null;
+    };
+
+    state.eventResumeTimer = setTimeout(doResume, 500);
   }
 
   function handleEventTap(tapX, tapY, now) {
@@ -1285,14 +1318,14 @@
     // Pre-boss cutscene overlay
     if (state.preBossCutscene) drawPreBossCutscene(now);
 
-    // EVENT OVERLAY — drawn on top of gameplay UI but below menu/gameover
-    if (state.currentEvent && !state.currentEvent.resolved && !state.menuScreen && !state.gameOver) {
+    // EVENT OVERLAY — only during active gameplay
+    if (state.inGameplay && state.currentEvent && !state.currentEvent.resolved) {
       try { drawEventOverlay(now); } catch (e) { console.error('event overlay:', e); }
     }
-    if (state.eventResultFlash && !state.menuScreen && !state.gameOver) drawEventFlash(now);
+    if (state.inGameplay && state.eventResultFlash) drawEventFlash(now);
 
     // Pause button + menu
-    if (!state.menuScreen && !state.gameOver && !state.levelCleared && !state.victoryScreen) drawPauseBtn();
+    if (state.inGameplay || state.countdownPhase) drawPauseBtn();
     if (state.paused) drawPauseMenu();
 
     // Victory / Level cleared / Game over — always on top, menu drawn last
@@ -2044,33 +2077,65 @@
     }
   });
 
-  function restartGame() {
+  // Single source of truth for returning to the main menu.
+  // Explicitly clears ALL end-game and in-game flags so nothing can bleed through.
+  function resetToMenu() {
+    // Cancel pending async timers BEFORE clearing state (so they can't reintroduce it)
+    if (state.eventResumeTimer) { clearTimeout(state.eventResumeTimer); state.eventResumeTimer = null; }
+
+    // Stop audio
+    stopMusic();
+    stopAllSfx();
+
     Object.assign(state, {
+      // Scoring/progress
       meter: 0, combo: 0, bestCombo: 0, score: 0,
       perfects: 0, goods: 0, misses: 0,
       floorPerfects: 0, floorGoods: 0, floorMisses: 0,
-      bubbles: [], activePopup: null, gameOver: false, gameOverTime: 0,
-      currentFloor: 0, floorPhase: 'riding',
-      rhythmPaused: true, beatCount: 0, passengers: [],
-      levelCleared: false, paused: false, pauseConfirmQuit: false,
-      currentEvent: null, eventFiredThisFloor: false, eventTriggerBeat: 0, eventResultFlash: null,
-      isBossFloor: false, preBossCutscene: false, bossDefeated: false,
+      currentFloor: 0, beatCount: 0,
+
+      // Gameplay objects
+      bubbles: [], passengers: [],
+      activePopup: null,
+
+      // End-game flags — all cleared
+      gameOver: false, gameOverTime: 0,
+      levelCleared: false,
       victoryScreen: false, victoryTime: 0,
+
+      // Pause
+      paused: false, pauseConfirmQuit: false,
+
+      // Floor/phase state
+      floorPhase: 'riding',
+      rhythmPaused: true,
       countdownPhase: false,
-      menuScreen: 'main',         // return to menu on restart
+
+      // Boss
+      isBossFloor: false, preBossCutscene: false, bossDefeated: false,
+
+      // Events — all cleared
+      currentEvent: null, eventFiredThisFloor: false,
+      eventTriggerBeat: 0, eventResultFlash: null,
+
+      // Tracking
       fartsFiredThisFloor: new Set(),
+
+      // Timing
       lastTime: performance.now(),
       nextBeatTime: performance.now() + CONFIG.beatInterval,
+
+      // Menu — enter at main
+      menuScreen: 'main',
     });
     state.pendingPassenger = null;
     fumeFrame = 0;
     musicBeatOrigin = performance.now();
-    stopMusic();
-    stopAllSfx();
-    // Cancel any pending event resume timer
-    if (state.eventResumeTimer) { clearTimeout(state.eventResumeTimer); state.eventResumeTimer = null; }
     recentExitedTypes = [];
   }
+
+  // Backwards-compat alias (restartGame = return to main menu)
+  const restartGame = resetToMenu;
 
   function init() {
     ctx.fillStyle = '#1a1a2e'; ctx.fillRect(0, 0, W, H);
