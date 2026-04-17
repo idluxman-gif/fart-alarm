@@ -311,7 +311,7 @@
     menuScreen: 'main',         // 'main', 'test-config', or null (in game)
     testOptions: {
       slowEvents: false,
-      eighthNotes: false,
+      eighthNotes: 0,           // 0-100 percentage, or -1 = random per beat
       phoneEvents: false,
       sneezeEvents: false,
       joltEvents: false,
@@ -497,7 +497,9 @@
   }
 
   function getEighthNoteChance() {
-    if (state.testOptions.eighthNotes) return 1.0;
+    const e = state.testOptions.eighthNotes;
+    if (e === -1) return Math.random(); // random per beat
+    if (typeof e === 'number' && e > 0) return e / 100;
     const floor = state.currentFloor;
     const chances = CONFIG.eighthNoteChance;
     return floor < chances.length ? chances[floor] : 1.0;
@@ -513,7 +515,7 @@
   const MENU_BTN_H = 50;
   const TOGGLE_LABELS = [
     { key: 'slowEvents',    label: 'Slow Events (10s window)' },
-    { key: 'eighthNotes',   label: '8th Notes (100% all floors)' },
+    { key: 'eighthNotes',   label: '8th Notes', slider: true },
     { key: 'phoneEvents',   label: 'Phone Events only' },
     { key: 'sneezeEvents',  label: 'Sneeze Events only' },
     { key: 'joltEvents',    label: 'Jolt Events only' },
@@ -546,11 +548,29 @@
       // Toggle rows start at y=18%, each 38px tall
       const rowStartY = H * 0.18;
       const rowH = 38;
+      const rowW = W * 0.85;
+      const rowX = (W - rowW) / 2;
       for (let i = 0; i < TOGGLE_LABELS.length; i++) {
         const ry = rowStartY + i * rowH;
         if (y > ry && y < ry + rowH) {
-          const key = TOGGLE_LABELS[i].key;
-          state.testOptions[key] = !state.testOptions[key];
+          const item = TOGGLE_LABELS[i];
+          if (item.slider) {
+            // Slider: tap position determines value
+            // Last 40px = RAND button, rest = 0-100% slider
+            const randX = rowX + rowW - 48;
+            if (x >= randX) {
+              state.testOptions[item.key] = -1; // random mode
+            } else {
+              // Map x from rowX+36 (after checkbox area) to randX
+              const sliderStart = rowX + 40;
+              const sliderEnd = randX - 8;
+              const pct = Math.max(0, Math.min(1, (x - sliderStart) / (sliderEnd - sliderStart)));
+              // Snap to 10% increments
+              state.testOptions[item.key] = Math.round(pct * 10) * 10;
+            }
+          } else {
+            state.testOptions[item.key] = !state.testOptions[item.key];
+          }
           return;
         }
       }
@@ -1771,27 +1791,64 @@
     const rowX = (W - rowW) / 2;
 
     for (let i = 0; i < TOGGLE_LABELS.length; i++) {
-      const { key, label } = TOGGLE_LABELS[i];
+      const item = TOGGLE_LABELS[i];
+      const { key, label } = item;
       const ry = rowStartY + i * rowH;
-      const active = state.testOptions[key];
+      const val = state.testOptions[key];
+      const active = item.slider ? (val !== 0 && val !== false) : !!val;
 
       // Row background
       ctx.fillStyle = active ? 'rgba(34, 197, 94, 0.25)' : 'rgba(255,255,255,0.06)';
       roundRect(ctx, rowX, ry + 2, rowW, rowH - 4, 8); ctx.fill();
 
-      // Checkbox
-      ctx.fillStyle = active ? '#22c55e' : '#555';
-      roundRect(ctx, rowX + 8, ry + 9, 20, 20, 4); ctx.fill();
-      if (active) {
-        ctx.fillStyle = '#fff'; ctx.font = 'bold 14px Arial';
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText('\u2713', rowX + 18, ry + 19);
-      }
+      if (item.slider) {
+        // Label (left)
+        const valText = val === -1 ? 'RAND' : `${val}%`;
+        ctx.fillStyle = active ? '#fff' : '#aaa';
+        ctx.font = 'bold 13px Arial'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        ctx.fillText(`${label}: ${valText}`, rowX + 10, ry + 12);
 
-      // Label
-      ctx.fillStyle = active ? '#fff' : '#aaa';
-      ctx.font = '14px Arial'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-      ctx.fillText(label, rowX + 36, ry + rowH / 2);
+        // Slider bar
+        const barY = ry + 22;
+        const barH = 8;
+        const randX = rowX + rowW - 48;
+        const sliderStart = rowX + 10;
+        const sliderEnd = randX - 8;
+        const sliderW = sliderEnd - sliderStart;
+        // Track
+        ctx.fillStyle = 'rgba(255,255,255,0.15)';
+        ctx.fillRect(sliderStart, barY, sliderW, barH);
+        // Fill
+        if (val === -1) {
+          // Random: animated rainbow pulse
+          const t = (Date.now() % 1000) / 1000;
+          ctx.fillStyle = `hsl(${t * 360}, 70%, 55%)`;
+          ctx.fillRect(sliderStart, barY, sliderW, barH);
+        } else if (val > 0) {
+          ctx.fillStyle = '#22c55e';
+          ctx.fillRect(sliderStart, barY, sliderW * (val / 100), barH);
+        }
+
+        // RAND button at far right
+        ctx.fillStyle = val === -1 ? '#a855f7' : '#444';
+        roundRect(ctx, randX, ry + 8, 40, rowH - 16, 6); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Arial';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('RAND', randX + 20, ry + rowH / 2);
+      } else {
+        // Checkbox
+        ctx.fillStyle = active ? '#22c55e' : '#555';
+        roundRect(ctx, rowX + 8, ry + 9, 20, 20, 4); ctx.fill();
+        if (active) {
+          ctx.fillStyle = '#fff'; ctx.font = 'bold 14px Arial';
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText('\u2713', rowX + 18, ry + 19);
+        }
+        // Label
+        ctx.fillStyle = active ? '#fff' : '#aaa';
+        ctx.font = '14px Arial'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        ctx.fillText(label, rowX + 36, ry + rowH / 2);
+      }
     }
 
     // START TEST button
