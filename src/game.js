@@ -356,6 +356,10 @@
     eventTriggerBeat: 0,         // pre-calculated beat when event fires
     eventResultFlash: null,      // { success: bool, startTime }
 
+    // Score popups
+    floorBonusPopup: null,       // { label, amount, startTime }
+    eventBonusPopup: null,       // { startTime }
+
     // FIX #6: Track which fart thresholds have fired this floor
     fartsFiredThisFloor: new Set(),
 
@@ -732,6 +736,14 @@
     registerResult(closestOff <= CONFIG.perfectWindow ? 'perfect' : 'good');
   }
 
+  // Combo multiplier: 1x (0-4), 2x (5-9), 3x (10-14), 4x (15+)
+  function getComboMultiplier() {
+    if (state.combo >= 15) return 4;
+    if (state.combo >= 10) return 3;
+    if (state.combo >= 5) return 2;
+    return 1;
+  }
+
   function registerResult(type) {
     const now = performance.now();
     if (type === 'perfect') {
@@ -740,11 +752,11 @@
       if (state.combo >= 2) {
         state.meter = Math.max(0, roundToSegment(state.meter + CONFIG.meterPerfect));
       }
-      state.score += 100 * (1 + Math.floor(state.combo / 5) * 0.1);
+      state.score += 100 * getComboMultiplier();
       showPopup('perfect', now);
     } else if (type === 'good') {
       state.combo = 0; state.goods++; state.floorGoods++;
-      state.score += 50;
+      state.score += 50 * getComboMultiplier(); // multiplier 1x after combo reset, but still applied
       showPopup('good', now);
     } else {
       // FIX #2: each MISS = exactly +10%
@@ -759,9 +771,21 @@
     checkFartThresholds();
 
     if (state.meter >= 1.0) {
-      state.meter = 1.0;
-      state.gameOver = true;
-      stopMusic();
+      if (state.testOptions.endless) {
+        state.meter = 0;
+        state.fartsFiredThisFloor = new Set();
+      } else {
+        state.meter = 1.0;
+        if (!state.gameOver) {
+          state.gameOver = true;
+          state.gameOverTime = performance.now();
+          fumeFrame = 0;
+          state.currentEvent = null;
+          stopAllSfx();
+          playSfx('fart-gameover');
+        }
+        stopMusic();
+      }
     }
   }
 
@@ -1084,6 +1108,9 @@
           playDing();
         }
       } else {
+        // Award floor bonus based on precision (before floor stats are reset)
+        awardFloorBonus(now);
+
         state.floorPhase = 'ding';
         state.floorTransitionStart = now;
         state.rhythmPaused = true;
@@ -1092,6 +1119,19 @@
         playDing();
       }
     }
+  }
+
+  function awardFloorBonus(now) {
+    // Don't award bonus on floor 0 (no gameplay happened yet)
+    if (state.currentFloor < 1) return;
+    const precision = getFloorPrecision();
+    let amount = 0, label = '';
+    if (precision >= 90) { amount = 500; label = 'PERFECT FLOOR!'; }
+    else if (precision >= 70) { amount = 200; label = 'GREAT FLOOR!'; }
+    else if (precision >= 50) { amount = 50; label = 'OK FLOOR'; }
+    else return; // no bonus, no popup
+    state.score += amount;
+    state.floorBonusPopup = { label, amount, startTime: now };
   }
 
   // ─── Interrupt Events ───────────────────────────────────────────
@@ -1163,7 +1203,8 @@
       playSfx('event-fail');
       if (state.meter >= 1.0) { if (state.testOptions.endless) { state.meter = 0; state.fartsFiredThisFloor = new Set(); } else { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; state.currentEvent = null; stopAllSfx(); playSfx('fart-gameover'); } stopMusic(); } }
     } else {
-      state.score += 200;
+      state.score += 300;
+      state.eventBonusPopup = { startTime: now };
       playSfx('event-success');
     }
 
@@ -1311,6 +1352,8 @@
 
     // Floor transition text (ding phase only)
     if (state.floorPhase === 'ding') drawFloorTransitionText(now);
+    if (state.floorBonusPopup) drawFloorBonusPopup(now);
+    if (state.eventBonusPopup) drawEventBonusPopup(now);
 
     // Countdown
     if (state.countdownPhase && !needsUserGesture && !state.gameOver && !state.menuScreen) drawCountdown(now);
@@ -1478,30 +1521,47 @@
 
   // Victory screen
   function drawVictoryScreen(now) {
+    checkAndSaveBest();
     const elapsed = now - state.victoryTime;
     const fadeIn = Math.min(1, elapsed / 1500);
 
     ctx.save();
-    // Golden glow background
     ctx.fillStyle = `rgba(40, 30, 0, ${fadeIn * 0.7})`;
     ctx.fillRect(0, 0, W, H);
 
     ctx.globalAlpha = fadeIn;
-    ctx.fillStyle = '#fbbf24'; ctx.font = 'bold 42px Arial';
+    ctx.fillStyle = '#fbbf24'; ctx.font = 'bold 40px Arial';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('🏆 YOU WIN! 🏆', W / 2, H * 0.20);
+    ctx.fillText('🏆 YOU WIN! 🏆', W / 2, H * 0.14);
 
-    ctx.fillStyle = '#fff'; ctx.font = '22px Arial';
-    ctx.fillText('The CEO survived!', W / 2, H * 0.28);
+    // Letter grade
+    const grade = getGrade();
+    ctx.fillStyle = getGradeColor(grade);
+    ctx.font = 'bold 96px Arial';
+    ctx.fillText(grade, W / 2, H * 0.30);
 
-    ctx.fillText(`Score: ${Math.floor(state.score)}`, W / 2, H * 0.38);
-    ctx.fillText(`Perfects: ${state.perfects}  Good: ${state.goods}`, W / 2, H * 0.43);
-    ctx.fillText(`Misses: ${state.misses}`, W / 2, H * 0.48);
-    ctx.fillText(`Best Combo: ${state.bestCombo}`, W / 2, H * 0.53);
+    ctx.fillStyle = '#fff'; ctx.font = '18px Arial';
+    ctx.fillText('The CEO survived!', W / 2, H * 0.42);
+
+    ctx.font = 'bold 24px Arial';
+    ctx.fillText(`${formatScore(state.score)} pts`, W / 2, H * 0.49);
+
+    // Best score status
+    ctx.font = '16px Arial';
+    if (cachedBestFlag) {
+      ctx.fillStyle = '#fbbf24';
+      ctx.fillText('🌟 NEW BEST!', W / 2, H * 0.55);
+    } else {
+      ctx.fillStyle = '#aaa';
+      ctx.fillText(`Best: ${formatScore(cachedBestScore)}`, W / 2, H * 0.55);
+    }
+
+    ctx.fillStyle = '#aaa'; ctx.font = '14px Arial';
+    ctx.fillText(`P:${state.perfects}  G:${state.goods}  M:${state.misses}  Combo:${state.bestCombo}`, W / 2, H * 0.61);
 
     if (elapsed > 2000) {
       ctx.fillStyle = '#aaa'; ctx.font = '16px Arial';
-      ctx.fillText('Tap to play again', W / 2, H * 0.63);
+      ctx.fillText('Tap to play again', W / 2, H * 0.70);
     }
     ctx.restore();
   }
@@ -1777,12 +1837,32 @@
   function drawComboHUD() {
     if (state.combo < 2) return;
     ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.font = 'bold 18px Arial';
+    const mult = getComboMultiplier();
+    const comboText = `x${state.combo} COMBO`;
+    const multText = `${mult}x`;
+
+    // Background pill
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.font = 'bold 18px Arial';
     ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-    const t = `x${state.combo} COMBO`, tw = ctx.measureText(t).width;
-    roundRect(ctx, 12, H * 0.12, tw + 20, 30, 6); ctx.fill();
+    const comboW = ctx.measureText(comboText).width;
+    ctx.font = 'bold 22px Arial';
+    const multW = ctx.measureText(multText).width;
+    const totalW = comboW + multW + 34;
+    roundRect(ctx, 12, H * 0.12, totalW, 32, 6); ctx.fill();
+
+    // Combo text
     ctx.fillStyle = state.combo >= 5 ? '#facc15' : '#fff';
-    ctx.fillText(t, 22, H * 0.12 + 6); ctx.restore();
+    ctx.font = 'bold 18px Arial';
+    ctx.fillText(comboText, 22, H * 0.12 + 7);
+
+    // Multiplier badge (colored by tier)
+    const multColor = mult >= 4 ? '#f472b6' : mult >= 3 ? '#a855f7' : mult >= 2 ? '#22c55e' : '#888';
+    ctx.fillStyle = multColor;
+    ctx.font = 'bold 22px Arial';
+    ctx.fillText(multText, 22 + comboW + 10, H * 0.12 + 5);
+
+    ctx.restore();
   }
 
   function drawFloorLED() {
@@ -1803,6 +1883,56 @@
   }
 
   // FIX #4: Floor transition text with precision
+  function drawFloorBonusPopup(now) {
+    const p = state.floorBonusPopup;
+    if (!p) return;
+    const duration = 2500;
+    const elapsed = now - p.startTime;
+    if (elapsed > duration) { state.floorBonusPopup = null; return; }
+
+    // Animation: rise up + fade out
+    const t = elapsed / duration;
+    const yOffset = -t * 40;
+    const alpha = 1 - Math.max(0, (t - 0.7) / 0.3);
+    const scale = 1 + (1 - t) * 0.3;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const cx = W / 2, cy = H * 0.42 + yOffset;
+
+    // Color by tier
+    const color = p.amount >= 500 ? '#fbbf24' : p.amount >= 200 ? '#22c55e' : '#a3a3a3';
+    ctx.fillStyle = color;
+    ctx.font = `bold ${Math.floor(26 * scale)}px Arial`;
+    ctx.fillText(p.label, cx, cy - 16);
+    ctx.fillStyle = '#fff';
+    ctx.font = `bold ${Math.floor(32 * scale)}px Arial`;
+    ctx.fillText(`+${p.amount}`, cx, cy + 16);
+    ctx.restore();
+  }
+
+  function drawEventBonusPopup(now) {
+    const p = state.eventBonusPopup;
+    if (!p) return;
+    const duration = 1500;
+    const elapsed = now - p.startTime;
+    if (elapsed > duration) { state.eventBonusPopup = null; return; }
+
+    const t = elapsed / duration;
+    const yOffset = -t * 30;
+    const alpha = 1 - Math.max(0, (t - 0.6) / 0.4);
+    const scale = 1 + (1 - t) * 0.3;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#fbbf24';
+    ctx.font = `bold ${Math.floor(28 * scale)}px Arial`;
+    ctx.fillText('+300 EVENT!', W / 2, H * 0.38 + yOffset);
+    ctx.restore();
+  }
+
   function drawFloorTransitionText(now) {
     // Brief ding overlay — just a quick flash, no heavy darkening
     const elapsed = now - state.floorTransitionStart;
@@ -1835,11 +1965,18 @@
 
     // PLAY button
     const btnW = W * 0.6, btnH = MENU_BTN_H;
-    const playY = H * 0.55;
+    const playY = H * 0.52;
     ctx.fillStyle = '#22c55e';
     roundRect(ctx, W / 2 - btnW / 2, playY, btnW, btnH, 12); ctx.fill();
     ctx.fillStyle = '#fff'; ctx.font = 'bold 22px Arial';
     ctx.fillText('\u{1F3AE} PLAY', W / 2, playY + btnH / 2);
+
+    // High score below PLAY
+    const best = getHighScore();
+    if (best > 0) {
+      ctx.fillStyle = '#fbbf24'; ctx.font = 'bold 16px Arial';
+      ctx.fillText(`Best: ${formatScore(best)}`, W / 2, playY + btnH + 20);
+    }
 
     // TEST MODE button
     const testY = H * 0.67;
@@ -1989,22 +2126,38 @@
   }
 
   function drawLevelCleared(now) {
+    checkAndSaveBest();
     ctx.save();
-    ctx.fillStyle = 'rgba(20, 30, 10, 0.6)';
+    ctx.fillStyle = 'rgba(20, 30, 10, 0.7)';
     ctx.fillRect(0, 0, W, H);
 
-    ctx.fillStyle = '#4ade80'; ctx.font = 'bold 42px Arial';
+    ctx.fillStyle = '#4ade80'; ctx.font = 'bold 38px Arial';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('LEVEL CLEAR!', W / 2, H * 0.22);
+    ctx.fillText('LEVEL CLEAR!', W / 2, H * 0.14);
 
-    ctx.fillStyle = '#fff'; ctx.font = '20px Arial';
-    ctx.fillText(`Score: ${Math.floor(state.score)}`, W / 2, H * 0.34);
-    ctx.fillText(`Perfects: ${state.perfects}  Good: ${state.goods}`, W / 2, H * 0.39);
-    ctx.fillText(`Misses: ${state.misses}`, W / 2, H * 0.44);
-    ctx.fillText(`Best Combo: ${state.bestCombo}`, W / 2, H * 0.49);
+    // Grade
+    const grade = getGrade();
+    ctx.fillStyle = getGradeColor(grade);
+    ctx.font = 'bold 96px Arial';
+    ctx.fillText(grade, W / 2, H * 0.30);
+
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 24px Arial';
+    ctx.fillText(`${formatScore(state.score)} pts`, W / 2, H * 0.44);
+
+    ctx.font = '16px Arial';
+    if (cachedBestFlag) {
+      ctx.fillStyle = '#fbbf24';
+      ctx.fillText('🌟 NEW BEST!', W / 2, H * 0.51);
+    } else {
+      ctx.fillStyle = '#aaa';
+      ctx.fillText(`Best: ${formatScore(cachedBestScore)}`, W / 2, H * 0.51);
+    }
+
+    ctx.fillStyle = '#aaa'; ctx.font = '14px Arial';
+    ctx.fillText(`P:${state.perfects}  G:${state.goods}  M:${state.misses}  Combo:${state.bestCombo}`, W / 2, H * 0.58);
 
     ctx.fillStyle = '#aaa'; ctx.font = '16px Arial';
-    ctx.fillText('Tap to play again', W / 2, H * 0.58);
+    ctx.fillText('Tap to play again', W / 2, H * 0.68);
     ctx.restore();
   }
 
@@ -2023,19 +2176,36 @@
     // Text only appears after the delay
     if (fadeIn <= 0) return;
 
+    checkAndSaveBest();
     ctx.save();
     ctx.globalAlpha = fadeIn;
-    const lvlClear = state.currentFloor > CONFIG.totalFloors;
-    ctx.fillStyle = lvlClear ? '#4ade80' : '#ef4444';
-    ctx.font = 'bold 42px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(lvlClear ? 'LEVEL CLEAR!' : 'GAME OVER', W / 2, H * 0.30);
-    ctx.fillStyle = '#fff'; ctx.font = '20px Arial';
-    ctx.fillText(`Score: ${Math.floor(state.score)}`, W / 2, H * 0.40);
-    ctx.fillText(`Floor: ${Math.min(state.currentFloor, CONFIG.totalFloors)}`, W / 2, H * 0.45);
-    ctx.fillText(`P: ${state.perfects}  G: ${state.goods}  M: ${state.misses}`, W / 2, H * 0.50);
-    ctx.fillText(`Best Combo: ${state.bestCombo}`, W / 2, H * 0.55);
+    ctx.fillStyle = '#ef4444';
+    ctx.font = 'bold 38px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('GAME OVER', W / 2, H * 0.22);
+
+    // Grade
+    const grade = getGrade();
+    ctx.fillStyle = getGradeColor(grade);
+    ctx.font = 'bold 84px Arial';
+    ctx.fillText(grade, W / 2, H * 0.36);
+
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 22px Arial';
+    ctx.fillText(`${formatScore(state.score)} pts`, W / 2, H * 0.47);
+
+    ctx.font = '16px Arial';
+    if (cachedBestFlag) {
+      ctx.fillStyle = '#fbbf24';
+      ctx.fillText('🌟 NEW BEST!', W / 2, H * 0.53);
+    } else {
+      ctx.fillStyle = '#aaa';
+      ctx.fillText(`Best: ${formatScore(cachedBestScore)}`, W / 2, H * 0.53);
+    }
+
+    ctx.fillStyle = '#aaa'; ctx.font = '14px Arial';
+    ctx.fillText(`Floor ${Math.min(state.currentFloor, CONFIG.totalFloors)}  ·  P:${state.perfects} G:${state.goods} M:${state.misses}  ·  Combo:${state.bestCombo}`, W / 2, H * 0.59);
+
     ctx.fillStyle = '#aaa'; ctx.font = '16px Arial';
-    ctx.fillText('Tap to restart', W / 2, H * 0.65);
+    ctx.fillText('Tap to return to menu', W / 2, H * 0.68);
     ctx.restore();
   }
 
@@ -2079,7 +2249,63 @@
 
   // Single source of truth for returning to the main menu.
   // Explicitly clears ALL end-game and in-game flags so nothing can bleed through.
+  // ─── Score / Grade / High Score ─────────────────────────────────
+  const HIGH_SCORE_KEY = 'elefartor_highscore';
+
+  function getHighScore() {
+    try { return parseInt(localStorage.getItem(HIGH_SCORE_KEY) || '0', 10) || 0; }
+    catch (e) { return 0; }
+  }
+
+  function saveHighScore(score) {
+    try {
+      const current = getHighScore();
+      if (score > current) {
+        localStorage.setItem(HIGH_SCORE_KEY, String(Math.floor(score)));
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function formatScore(n) {
+    return Math.floor(n).toLocaleString('en-US');
+  }
+
+  function calculateMaxScore() {
+    // All PERFECTs at max (4x) multiplier + all floor bonuses + all events + boss if survived
+    const regularBeats = CONFIG.beatsPerFloor * CONFIG.totalFloors;
+    const bossBeats = state.bossDefeated ? CONFIG.bossDurationBeats : 0;
+    const maxQuarterPoints = (regularBeats + bossBeats) * 400; // 100 × 4x max mult
+    const maxFloorBonuses = CONFIG.totalFloors * 500;          // PERFECT FLOOR each
+    const maxEventBonuses = Math.max(0, CONFIG.totalFloors - CONFIG.eventMinFloor) * 300;
+    return maxQuarterPoints + maxFloorBonuses + maxEventBonuses;
+  }
+
+  function getGrade() {
+    const max = calculateMaxScore();
+    if (max <= 0) return 'C';
+    const ratio = state.score / max;
+    if (ratio >= 0.9) return 'S';
+    if (ratio >= 0.7) return 'A';
+    if (ratio >= 0.5) return 'B';
+    return 'C';
+  }
+
+  function getGradeColor(grade) {
+    return grade === 'S' ? '#fbbf24' : grade === 'A' ? '#22c55e' : grade === 'B' ? '#60a5fa' : '#f87171';
+  }
+
+  // Cached flag — computed once per end-game entry so we know if new best
+  let cachedBestFlag = null, cachedBestScore = 0;
+  function checkAndSaveBest() {
+    if (cachedBestFlag !== null) return; // already computed for this run
+    cachedBestScore = getHighScore();
+    cachedBestFlag = saveHighScore(state.score);
+  }
+
   function resetToMenu() {
+    cachedBestFlag = null; cachedBestScore = 0;
     // Cancel pending async timers BEFORE clearing state (so they can't reintroduce it)
     if (state.eventResumeTimer) { clearTimeout(state.eventResumeTimer); state.eventResumeTimer = null; }
 
@@ -2117,6 +2343,9 @@
       // Events — all cleared
       currentEvent: null, eventFiredThisFloor: false,
       eventTriggerBeat: 0, eventResultFlash: null,
+
+      // Score popups
+      floorBonusPopup: null, eventBonusPopup: null,
 
       // Tracking
       fartsFiredThisFloor: new Set(),
