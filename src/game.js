@@ -1279,6 +1279,21 @@
     // Pre-boss cutscene overlay
     if (state.preBossCutscene) drawPreBossCutscene(now);
 
+    // DIAGNOSTIC: always draw state info in top-right
+    if (!state.menuScreen) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillRect(W - 140, 50, 135, 60);
+      ctx.fillStyle = '#0f0';
+      ctx.font = '11px monospace';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText('ev: ' + (state.currentEvent ? state.currentEvent.type : 'null'), W - 135, 55);
+      ctx.fillText('resolved: ' + (state.currentEvent ? state.currentEvent.resolved : '-'), W - 135, 70);
+      ctx.fillText('menu: ' + state.menuScreen, W - 135, 85);
+      ctx.fillText('gameOver: ' + state.gameOver, W - 135, 100);
+      ctx.restore();
+    }
+
     // EVENT OVERLAY — drawn on top of gameplay UI but below menu/gameover
     if (state.currentEvent && !state.currentEvent.resolved && !state.menuScreen && !state.gameOver) {
       try { drawEventOverlay(now); } catch (e) { console.error('event overlay:', e); }
