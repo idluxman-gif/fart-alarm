@@ -324,7 +324,6 @@
     // Menu
     menuScreen: 'main',         // 'main', 'test-config', or null (in game)
     testOptions: {
-      slowEvents: false,
       eighthNotes: 0,           // 0-100 percentage, or -1 = random per beat
       phoneEvents: false,
       sneezeEvents: false,
@@ -507,7 +506,9 @@
   }
 
   function getEventTimeout() {
-    return state.testOptions.slowEvents ? 10000 : getEventTimeout();
+    const to = state.testOptions;
+    const anyEventSelected = to.phoneEvents || to.sneezeEvents || to.joltEvents || to.allEvents;
+    return anyEventSelected ? 10000 : CONFIG.eventTimeout;
   }
 
   function getEighthNoteChance() {
@@ -528,7 +529,6 @@
   // ─── Menu Constants ──────────────────────────────────────────────
   const MENU_BTN_H = 50;
   const TOGGLE_LABELS = [
-    { key: 'slowEvents',    label: 'Slow Events (10s window)' },
     { key: 'eighthNotes',   label: '8th Notes', slider: true },
     { key: 'phoneEvents',   label: 'Phone Events only' },
     { key: 'sneezeEvents',  label: 'Sneeze Events only' },
@@ -1108,7 +1108,6 @@
     const type = types[Math.floor(Math.random() * types.length)];
 
     const event = { type, startTime: now, resolved: false };
-    console.log('[EVENT] Triggering', type, 'at t=' + now.toFixed(0));
 
     if (type === 'phone') {
       // Safe zone: 20-80% width, 25-55% height
@@ -1163,13 +1162,20 @@
     state.eventResumeTimer = setTimeout(() => {
       // Only clear if this is still the same event (not a fresh one)
       if (state.currentEvent === eventRef) state.currentEvent = null;
-      if (state.gameOver || state.menuScreen) return; // don't resume after quit/game over
+      if (state.gameOver || state.menuScreen) return;
       const resumeNow = performance.now();
       state.nextBeatTime = getNextBeatOnGrid(resumeNow);
       const minFirstHit = resumeNow + CONFIG.bubbleTravelTime;
       if (state.nextBeatTime < minFirstHit) {
         const skip = Math.ceil((minFirstHit - state.nextBeatTime) / CONFIG.beatInterval);
         state.nextBeatTime += skip * CONFIG.beatInterval;
+      }
+      // TEST MODE: re-schedule another event 8-16 beats later (repeat events per floor)
+      const to = state.testOptions;
+      const anyEventSelected = to.phoneEvents || to.sneezeEvents || to.joltEvents || to.allEvents;
+      if (anyEventSelected && !state.isBossFloor) {
+        state.eventFiredThisFloor = false;
+        state.eventTriggerBeat = state.beatCount + 8 + Math.floor(Math.random() * 8);
       }
     }, 500);
   }
@@ -1278,21 +1284,6 @@
 
     // Pre-boss cutscene overlay
     if (state.preBossCutscene) drawPreBossCutscene(now);
-
-    // DIAGNOSTIC: always draw state info in top-right
-    if (!state.menuScreen) {
-      ctx.save();
-      ctx.fillStyle = 'rgba(0,0,0,0.7)';
-      ctx.fillRect(W - 140, 50, 135, 60);
-      ctx.fillStyle = '#0f0';
-      ctx.font = '11px monospace';
-      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-      ctx.fillText('ev: ' + (state.currentEvent ? state.currentEvent.type : 'null'), W - 135, 55);
-      ctx.fillText('resolved: ' + (state.currentEvent ? state.currentEvent.resolved : '-'), W - 135, 70);
-      ctx.fillText('menu: ' + state.menuScreen, W - 135, 85);
-      ctx.fillText('gameOver: ' + state.gameOver, W - 135, 100);
-      ctx.restore();
-    }
 
     // EVENT OVERLAY — drawn on top of gameplay UI but below menu/gameover
     if (state.currentEvent && !state.currentEvent.resolved && !state.menuScreen && !state.gameOver) {
@@ -1499,13 +1490,6 @@
     const elapsed = now - ev.startTime;
     const pulse = 0.7 + Math.sin(now / 150) * 0.3;
     const timeLeft = Math.max(0, 1 - elapsed / getEventTimeout());
-
-    // DIAGNOSTIC: draw a bright magenta border so we know drawEventOverlay ran
-    ctx.save();
-    ctx.strokeStyle = '#ff00ff';
-    ctx.lineWidth = 6;
-    ctx.strokeRect(3, 3, W - 6, H - 6);
-    ctx.restore();
 
     // 1. Dark background overlay
     ctx.save();
