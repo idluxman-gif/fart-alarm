@@ -1108,6 +1108,7 @@
     const type = types[Math.floor(Math.random() * types.length)];
 
     const event = { type, startTime: now, resolved: false };
+    console.log('[EVENT] Triggering', type, 'at t=' + now.toFixed(0));
 
     if (type === 'phone') {
       // Safe zone: 20-80% width, 25-55% height
@@ -1479,9 +1480,17 @@
 
   function drawEventOverlay(now) {
     const ev = state.currentEvent;
+    if (!ev) return;
     const elapsed = now - ev.startTime;
     const pulse = 0.7 + Math.sin(now / 150) * 0.3;
     const timeLeft = Math.max(0, 1 - elapsed / getEventTimeout());
+
+    // DIAGNOSTIC: draw a bright magenta border so we know drawEventOverlay ran
+    ctx.save();
+    ctx.strokeStyle = '#ff00ff';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(3, 3, W - 6, H - 6);
+    ctx.restore();
 
     // 1. Dark background overlay
     ctx.save();
