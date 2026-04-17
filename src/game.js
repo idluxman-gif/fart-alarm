@@ -1126,13 +1126,9 @@
       }
       return true; // consume tap but don't resolve (missed the phone)
     } else if (ev.type === 'sneeze') {
-      // Must tap within the target passenger's bounding box
-      let targetLayout;
-      if (ev.targetPax) {
-        targetLayout = getPassengerLayout(ev.targetPax);
-      } else {
-        targetLayout = getGinoLayout();
-      }
+      // Must tap within the target passenger's bounding box (or Gino if pax gone)
+      const paxStillActive = ev.targetPax && state.passengers.includes(ev.targetPax) && !ev.targetPax.exiting;
+      const targetLayout = paxStillActive ? getPassengerLayout(ev.targetPax) : getGinoLayout();
       if (tapX >= targetLayout.drawX && tapX <= targetLayout.drawX + targetLayout.drawW
           && tapY >= targetLayout.drawY && tapY <= targetLayout.drawY + targetLayout.drawH) {
         resolveEvent(true, now);
@@ -1458,7 +1454,9 @@
 
     } else if (ev.type === 'sneeze') {
       let targetX, targetY;
-      if (ev.targetPax) {
+      // Check if the pax still exists in state.passengers (may have exited)
+      const paxStillActive = ev.targetPax && state.passengers.includes(ev.targetPax) && !ev.targetPax.exiting;
+      if (paxStillActive) {
         const layout = getPassengerLayout(ev.targetPax);
         targetX = layout.drawX + layout.drawW / 2;
         targetY = layout.drawY;
@@ -1917,8 +1915,9 @@
     const now = performance.now();
     const dt = Math.min(now - state.lastTime, 100);
     state.lastTime = now;
-    update(now, dt);
-    render(now);
+    try { update(now, dt); } catch (e) { console.error('update error:', e); }
+    try { render(now); } catch (e) { console.error('render error:', e); }
+    // ALWAYS schedule next frame — don't let exceptions freeze the loop
     loopId = requestAnimationFrame(gameLoop);
   }
 
