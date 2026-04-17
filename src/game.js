@@ -26,6 +26,7 @@
   let needsUserGesture = true;
 
   const sfxBuffers = {};
+  const activeSfxSources = [];
 
   function loadMusic() {
     return fetch('Assets/audio/smooth-jazz-loop.mp3')
@@ -66,6 +67,18 @@
     src.buffer = sfxBuffers[name];
     src.connect(audioCtx.destination);
     src.start(0);
+    activeSfxSources.push(src);
+    src.onended = () => {
+      const idx = activeSfxSources.indexOf(src);
+      if (idx >= 0) activeSfxSources.splice(idx, 1);
+    };
+  }
+
+  function stopAllSfx() {
+    for (const src of activeSfxSources) {
+      try { src.stop(); } catch (e) {}
+    }
+    activeSfxSources.length = 0;
   }
 
   // Elevator ding — synthesized two-tone chime
@@ -671,7 +684,11 @@
       }
     }
 
-    if (state.levelCleared || state.victoryScreen || state.gameOver) { restartGame(); return; }
+    if (state.levelCleared || state.victoryScreen || state.gameOver) {
+      // Return to main menu (restartGame already sets menuScreen='main')
+      restartGame();
+      return;
+    }
     if (state.rhythmPaused || state.countdownPhase) return;
 
     const now = performance.now();
@@ -816,6 +833,11 @@
 
   // ─── Update Logic ──────────────────────────────────────────────
   function update(now, dt) {
+    // Auto-return to main menu after game over (6s)
+    if (state.gameOver && !state.menuScreen && now - state.gameOverTime > 6000) {
+      restartGame();
+      return;
+    }
     if (state.gameOver || state.levelCleared || state.paused || state.menuScreen) return;
     const dtSec = dt / 1000;
 
@@ -956,7 +978,7 @@
           state.combo = 0; state.misses++; state.floorMisses++;
           showPopup('miss', now);
           checkFartThresholds();
-          if (state.meter >= 1.0) { if (state.testOptions.endless) { state.meter = 0; state.fartsFiredThisFloor = new Set(); } else { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; } stopMusic(); } }
+          if (state.meter >= 1.0) { if (state.testOptions.endless) { state.meter = 0; state.fartsFiredThisFloor = new Set(); } else { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; state.currentEvent = null; stopAllSfx(); playSfx('fart-gameover'); } stopMusic(); } }
         } else {
           registerResult('miss');
         }
@@ -989,7 +1011,7 @@
       state.meter = Math.max(0, state.meter + CONFIG.meterComboDecay * dtSec);
     }
 
-    if (state.meter >= 1.0) { if (state.testOptions.endless) { state.meter = 0; state.fartsFiredThisFloor = new Set(); } else { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; } stopMusic(); } }
+    if (state.meter >= 1.0) { if (state.testOptions.endless) { state.meter = 0; state.fartsFiredThisFloor = new Set(); } else { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; state.currentEvent = null; stopAllSfx(); playSfx('fart-gameover'); } stopMusic(); } }
 
     // Popup expiry
     if (state.activePopup && now - state.activePopup.startTime > CONFIG.comboPopupDuration) {
@@ -1124,7 +1146,7 @@
       state.meter = Math.min(1, roundToSegment(state.meter + penalty));
       checkFartThresholds();
       playSfx('event-fail');
-      if (state.meter >= 1.0) { if (state.testOptions.endless) { state.meter = 0; state.fartsFiredThisFloor = new Set(); } else { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; } stopMusic(); } }
+      if (state.meter >= 1.0) { if (state.testOptions.endless) { state.meter = 0; state.fartsFiredThisFloor = new Set(); } else { state.meter = 1.0; if (!state.gameOver) { state.gameOver = true; state.gameOverTime = performance.now(); fumeFrame = 0; state.currentEvent = null; stopAllSfx(); playSfx('fart-gameover'); } stopMusic(); } }
     } else {
       state.score += 200;
       playSfx('event-success');
@@ -1132,10 +1154,15 @@
 
     state.eventResultFlash = { success, startTime: now };
 
+    // Capture current event to prevent stale timer clearing a NEW event later
+    const eventRef = state.currentEvent;
+
     // Resume rhythm after a brief pause
-    setTimeout(() => {
-      state.currentEvent = null;
-      // Snap to beat grid, ensure first bubble has full travel time
+    if (state.eventResumeTimer) clearTimeout(state.eventResumeTimer);
+    state.eventResumeTimer = setTimeout(() => {
+      // Only clear if this is still the same event (not a fresh one)
+      if (state.currentEvent === eventRef) state.currentEvent = null;
+      if (state.gameOver || state.menuScreen) return; // don't resume after quit/game over
       const resumeNow = performance.now();
       state.nextBeatTime = getNextBeatOnGrid(resumeNow);
       const minFirstHit = resumeNow + CONFIG.bubbleTravelTime;
@@ -1239,36 +1266,36 @@
     // End screen shake
     if (shakeX) ctx.restore();
 
-    // 9. Interrupt event overlay
-    if (state.currentEvent && !state.currentEvent.resolved) drawEventOverlay(now);
-    if (state.eventResultFlash) drawEventFlash(now);
-
-    // 10. HUD
+    // HUD
     drawComboHUD();
+
+    // Floor transition text (ding phase only)
+    if (state.floorPhase === 'ding') drawFloorTransitionText(now);
+
+    // Countdown
+    if (state.countdownPhase && !needsUserGesture && !state.gameOver && !state.menuScreen) drawCountdown(now);
+
+    // Pre-boss cutscene overlay
+    if (state.preBossCutscene) drawPreBossCutscene(now);
+
+    // EVENT OVERLAY — drawn on top of gameplay UI but below menu/gameover
+    if (state.currentEvent && !state.currentEvent.resolved && !state.menuScreen && !state.gameOver) {
+      try { drawEventOverlay(now); } catch (e) { console.error('event overlay:', e); }
+    }
+    if (state.eventResultFlash && !state.menuScreen && !state.gameOver) drawEventFlash(now);
+
+    // Pause button + menu
     if (!state.menuScreen && !state.gameOver && !state.levelCleared && !state.victoryScreen) drawPauseBtn();
     if (state.paused) drawPauseMenu();
 
-    // 10. Floor transition text (ding phase only — doors use the open bg)
-    if (state.floorPhase === 'ding') drawFloorTransitionText(now);
+    // Victory / Level cleared / Game over — always on top, menu drawn last
+    if (state.victoryScreen) drawVictoryScreen(now);
+    if (state.levelCleared) drawLevelCleared(now);
+    if (state.gameOver && !state.victoryScreen && !state.levelCleared && !state.menuScreen) drawGameOver(now);
 
-    // 11. Countdown
-    if (state.countdownPhase && !needsUserGesture && !state.gameOver) drawCountdown(now);
-
-    // 12. Menu screens
+    // Menu screens — topmost (hides everything underneath)
     if (state.menuScreen === 'main') { drawMainMenu(); }
     else if (state.menuScreen === 'test-config') { drawTestConfig(); }
-
-    // 13. Pre-boss cutscene overlay
-    if (state.preBossCutscene) drawPreBossCutscene(now);
-
-    // 14. Victory screen
-    if (state.victoryScreen) drawVictoryScreen(now);
-
-    // 15. Level cleared screen
-    if (state.levelCleared) drawLevelCleared(now);
-
-    // 16. Game over text (fume cloud already drawn behind Gino at step 3)
-    if (state.gameOver && !state.victoryScreen && !state.levelCleared) drawGameOver(now);
 
     // 16. Boss floor indicator
     if (state.isBossFloor && state.floorPhase === 'riding' && !state.countdownPhase) drawBossHUD();
@@ -2031,6 +2058,10 @@
     fumeFrame = 0;
     musicBeatOrigin = performance.now();
     stopMusic();
+    stopAllSfx();
+    // Cancel any pending event resume timer
+    if (state.eventResumeTimer) { clearTimeout(state.eventResumeTimer); state.eventResumeTimer = null; }
+    recentExitedTypes = [];
   }
 
   function init() {
