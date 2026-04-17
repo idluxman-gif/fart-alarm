@@ -149,15 +149,6 @@
     bubbleSize: 50,              // quarter note bubble size
     eighthNoteSize: 35,          // 8th note bubble size (70% of quarter)
     tapZoneSize: 65,
-
-    // 8th note frequency by floor (chance each beat spawns an 8th note partner)
-    eighthNoteChance: [
-      0, 0, 0,       // floors 0-2: none
-      0.25, 0.25,    // floors 3-4: 25%
-      0.50, 0.50,    // floors 5-6: 50%
-      0.75, 0.75, 0.75, // floors 7-9: 75%
-      1.0,           // floor 10+: always
-    ],
     countdownBeats: 3,
 
     perfectWindow: 30,
@@ -527,12 +518,21 @@
   }
 
   function getEighthNoteChance() {
+    // Test mode override (slider or random)
     const e = state.testOptions.eighthNotes;
-    if (e === -1) return Math.random(); // random per beat
+    if (e === -1) return Math.random();
     if (typeof e === 'number' && e > 0) return e / 100;
+
+    // Real game formula:
+    //   Floor 0 → 0% (warmup)
+    //   Boss floor → 100%
+    //   Otherwise → (floor × 5) + (passengerCount × 5) %, capped at 80%
+    if (state.isBossFloor) return 1.0;
     const floor = state.currentFloor;
-    const chances = CONFIG.eighthNoteChance;
-    return floor < chances.length ? chances[floor] : 1.0;
+    if (floor <= 0) return 0;
+    const paxCount = state.passengers.filter(p => !p.exiting).length;
+    const pct = (floor * 5) + (paxCount * 5);
+    return Math.min(80, pct) / 100;
   }
 
   function getBubbleX(bubble, now) {
@@ -2145,7 +2145,6 @@
 
     Promise.all([loadAllAssets(), loadAllAudio()])
       .then(() => {
-        console.log('ELEFARTOR — ready');
         createEighthNoteBubble();
         canvas.addEventListener('mousedown', (e) => {
           e.preventDefault();
