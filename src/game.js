@@ -294,6 +294,7 @@
   // Keep a continuous beat grid based on performance.now() origin.
   // After floor transitions, snap nextBeatTime to the nearest future beat on this grid.
   let lastTapX = 0, lastTapY = 0; // last tap coordinates for event hit detection
+  let draggingSliderKey = null; // when dragging a slider, the key being adjusted
   let musicBeatOrigin = 0; // performance.now() when beat grid started
 
   function getNextBeatOnGrid(now) {
@@ -526,6 +527,20 @@
     { key: 'endless',       label: 'Endless (no game over)' },
   ];
 
+  function updateSliderDrag(clientX, clientY) {
+    if (!draggingSliderKey || state.menuScreen !== 'test-config') return;
+    const rect = canvas.getBoundingClientRect();
+    const x = (clientX - rect.left) * (W / rect.width);
+    // Find the slider row config to get bounds
+    const rowW = W * 0.85;
+    const rowX = (W - rowW) / 2;
+    const randX = rowX + rowW - 48;
+    const sliderStart = rowX + 10;
+    const sliderEnd = randX - 8;
+    const pct = Math.max(0, Math.min(1, (x - sliderStart) / (sliderEnd - sliderStart)));
+    state.testOptions[draggingSliderKey] = Math.round(pct * 100);
+  }
+
   function handleMenuTap(tapX, tapY) {
     const rect = canvas.getBoundingClientRect();
     const x = (tapX - rect.left) * (W / rect.width);
@@ -555,18 +570,16 @@
         if (y > ry && y < ry + rowH) {
           const item = TOGGLE_LABELS[i];
           if (item.slider) {
-            // Slider: tap position determines value
-            // Last 40px = RAND button, rest = 0-100% slider
+            // Slider: tap position determines value, and starts drag
             const randX = rowX + rowW - 48;
             if (x >= randX) {
               state.testOptions[item.key] = -1; // random mode
             } else {
-              // Map x from rowX+36 (after checkbox area) to randX
-              const sliderStart = rowX + 40;
+              const sliderStart = rowX + 10;
               const sliderEnd = randX - 8;
               const pct = Math.max(0, Math.min(1, (x - sliderStart) / (sliderEnd - sliderStart)));
-              // Snap to 10% increments
-              state.testOptions[item.key] = Math.round(pct * 10) * 10;
+              state.testOptions[item.key] = Math.round(pct * 100);
+              draggingSliderKey = item.key; // enable drag tracking
             }
           } else {
             state.testOptions[item.key] = !state.testOptions[item.key];
@@ -803,7 +816,7 @@
 
   // ─── Update Logic ──────────────────────────────────────────────
   function update(now, dt) {
-    if (state.gameOver || state.levelCleared || state.paused) return;
+    if (state.gameOver || state.levelCleared || state.paused || state.menuScreen) return;
     const dtSec = dt / 1000;
 
     updatePassengers(now);
@@ -2040,6 +2053,22 @@
           if (e.touches.length > 0) { lastTapX = e.touches[0].clientX; lastTapY = e.touches[0].clientY; }
           handleTap();
         }, { passive: false });
+
+        // Drag support for slider
+        canvas.addEventListener('mousemove', (e) => {
+          if (!draggingSliderKey) return;
+          updateSliderDrag(e.clientX, e.clientY);
+        });
+        canvas.addEventListener('touchmove', (e) => {
+          if (!draggingSliderKey) return;
+          e.preventDefault();
+          if (e.touches.length > 0) updateSliderDrag(e.touches[0].clientX, e.touches[0].clientY);
+        }, { passive: false });
+        const endDrag = () => { draggingSliderKey = null; };
+        canvas.addEventListener('mouseup', endDrag);
+        canvas.addEventListener('mouseleave', endDrag);
+        canvas.addEventListener('touchend', endDrag);
+        canvas.addEventListener('touchcancel', endDrag);
         state.lastTime = performance.now();
         state.nextBeatTime = state.lastTime + CONFIG.beatInterval;
         state.running = true;
